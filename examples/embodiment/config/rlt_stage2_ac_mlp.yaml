@@ -42,7 +42,7 @@ runner:
   logger:
     log_path: "../results"
     project_name: rlinf-rlt
-    experiment_name: "rlt_stage2_ac_mlp_realworld_peg_insertion"
+    experiment_name: "rlt_stage2_ac_mlp_sandwich_offline"
     logger_backends: ["tensorboard"]
 
   max_epochs: 8000
@@ -182,13 +182,13 @@ rollout:
     precision: null
     is_lora: False
     # Checkpoint produced by examples/sft/config/rlt_stage1_sft_openpi_pi05.yaml.
-    model_path: "/path/to/stage1/checkpoint"
+    model_path: "/inspire/qb-ilm/project/robot-reasoning/czxs253130583/yushun/RLinf-worktree-rltoken-anhao/results/rlt_stage1_sft_pi05_sandwich_h200_2gpu/rlt_stage1_sft_pi05_sandwich_h100_2gpu/checkpoints/global_step_20000"
     openpi_data:
       # Must match the repo_id/config_name used to compute Stage1 OpenPI norm stats.
-      repo_id: "realworld_peg_insertion_rlt_stage1"
+      repo_id: "pi05_sandwich_new_all"
     openpi:
-      config_name: "pi05_franka_state"
-      num_images_in_input: 1
+      config_name: "pi05_aloha_robotwin"
+      num_images_in_input: 3
       action_chunk: ${actor.model.ref_num_action_chunks}
       num_steps: 4
       # Keep the collected 19D raw state as Stage2 proprio.
@@ -228,10 +228,10 @@ actor:
 
     # RLT Stage2 MLP input/output shape.
     z_dim: 2048
-    proprio_dim: 19
-    action_dim: 7
+    proprio_dim: 14
+    action_dim: 14
     num_action_chunks: 10
-    ref_num_action_chunks: 20
+    ref_num_action_chunks: 50
 
   optim:
     clip_grad: 10.0
