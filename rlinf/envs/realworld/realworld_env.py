@@ -54,6 +54,19 @@ class RealWorldEnv(gym.Env):
         self.num_group = num_envs // cfg.group_size
         self.group_size = cfg.group_size
         self.main_image_key = cfg.main_image_key
+        self.wrist_image_keys = tuple(cfg.get("wrist_image_keys", []))
+        if self.wrist_image_keys:
+            if len(self.wrist_image_keys) != 2:
+                raise ValueError(
+                    "wrist_image_keys must contain exactly two entries in "
+                    "[left, right] order."
+                )
+            if len(set(self.wrist_image_keys)) != 2:
+                raise ValueError("wrist_image_keys entries must be distinct.")
+            if self.main_image_key in self.wrist_image_keys:
+                raise ValueError(
+                    "main_image_key cannot also appear in wrist_image_keys."
+                )
         self.manual_episode_control_only = bool(
             self.override_cfg.get("manual_episode_control_only", False)
         )
@@ -224,7 +237,23 @@ class RealWorldEnv(gym.Env):
         raw_images = OrderedDict(sorted(frames.items()))
         raw_images.pop(self.main_image_key)
 
-        if raw_images:
+        if self.wrist_image_keys:
+            missing_wrist_images = [
+                key for key in self.wrist_image_keys if key not in raw_images
+            ]
+            if missing_wrist_images:
+                raise KeyError(
+                    "Configured wrist images are missing from raw observation: "
+                    f"{missing_wrist_images}; available={list(frames)}."
+                )
+            obs["wrist_images"] = np.stack(
+                [raw_images.pop(key) for key in self.wrist_image_keys],
+                axis=1,
+            )
+            obs["extra_view_images"] = (
+                np.stack(list(raw_images.values()), axis=1) if raw_images else None
+            )
+        elif raw_images:
             obs["extra_view_images"] = np.stack(list(raw_images.values()), axis=1)
 
         obs = to_tensor(obs)
