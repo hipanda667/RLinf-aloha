@@ -29,6 +29,135 @@ RLinf is a flexible and scalable open-source RL infrastructure designed for Embo
 </div>
 
 
+## RL Token (RLT) Reproduction
+
+> 本仓库（RLin_aloha）基于 RLinf 增加了 **RL Token (RLT)** 两阶段流程：把重型 VLA（π₀.₅）的 prefix 编码压缩为 1 个 RL token（z_rl），再用轻量 MLP actor-critic 做 SAC / 离线 RL。
+>
+> Stage 2 每个决策只做 MLP 前向（毫秒级），VLA 仅作为离线特征提取器，避免在重型 VLM 上直接做在线 RL。
+
+### 核心链路
+
+```
+数据(HDF5) → LeRobot v2.1 → norm_stats
+    ↓
+Stage 1 SFT: Pi0.5 + RLT Token Transformer   (loss = rlt_loss + rlt_alpha × vla_loss)
+    ↓
+Replay Buffer: 冻结 Stage1 模型提取 {z_rl[2048], proprio[14], ref_chunk[16×14]}
+    ↓
+Stage 2 Offline RL: rlt_mlp_policy (SAC-style, q_weight=0.1, bc_weight=5)
+    ↓
+部署: WebSocket policy server (port 8001) / 真机在线 RL
+```
+
+### 阶段 0：数据准备
+
+| 步骤 | 产物 | 参考 |
+|---|---|---|
+| ALOHA HDF5 → LeRobot v2.1 | `sandwich_merged_all_0805_v21_forge`（95 ep / 131k 帧） | Forge v2.1 writer |
+| 计算 norm stats | `<repo_id>/norm_stats.json`（训练 transform 后空间） | `toolkits/lerobot/calculate_norm_stats_fast.py` |
+| 预训练权重 | Pi0.5 base（迁移 + SHA256 校验） | `data/model/pi05/sft/RLinf-Pi05-LIBERO-SFT` |
+
+### Stage 1：SFT（联合训练 Pi0.5 + RLT token）
+
+```bash
+bash examples/sft/run_rlt_stage1_sft_openpi_pi05.sh
+```
+
+配置：`examples/sft/config/rlt_stage1_sft_openpi_pi05_*.yaml`
+
+```yaml
+actor.model.openpi:
+  config_name: "pi05_aloha_robotwin"
+  action_horizon: 16
+  action_chunk: 16
+  use_rlt: true
+  rlt_alpha: 1.0
+  rlt_prefix_seq_len: 1024
+  rlt_image_only: false
+  rlt_use_mask: true
+  noise_method: "flow_noise"
+  num_steps: 4
+```
+
+产物：`checkpoints/global_step_XXXX/actor/`（`full_weights.pt` + `<repo_id>/norm_stats.json`）。
+
+### Replay Buffer 生成（离线，Stage1→Stage2 桥梁）
+
+```bash
+STAGE1_MODEL_PATH=<actor checkpoint> \
+HDF5_DIR=<episode_*.hdf5 目录> \
+OUTPUT_BUFFER_DIR=<buffer 输出目录> \
+python toolkits/replay_buffer/convert_hdf5_to_rlinf_buffer.py
+```
+
+对每帧用冻结的 Stage1 模型 `extract_rlt_obs()` 提取：
+
+```
+z_rl       [B, 2048]     RLT token（RLTTokenEncoder 输出）
+proprio    [B, 14]       raw state
+ref_chunk  [B, 16, 14]    Stage1 VLA 参考动作（BC 正则）
+```
+
+产物：`metadata.json` + `trajectory_index.json` + `trajectory_*.pt`。
+
+### Stage 2：Offline RL（SAC-style actor-critic）
+
+```bash
+bash examples/embodiment/run_rlt_stage2_offline.sh
+```
+
+配置：`examples/embodiment/config/rlt_stage2_offline_ac_mlp_sandwich_rl_s1step15000_h16.yaml`
+
+```yaml
+actor.model:
+  model_type: "rlt_mlp_policy"
+  z_dim: 2048
+  proprio_dim: 14
+  action_dim: 14
+  num_action_chunks: 16
+  ref_num_action_chunks: 16
+algorithm:
+  adv_type: "embodied_sac"
+  loss_type: "rlt_ac"
+  q_weight: 0.1
+  bc_weight: 5
+  reference_dropout_prob: 0.5
+replay_buffer:
+  load_path: <Replay Buffer 目录>
+```
+
+关键机制：`RLTMLPPolicy` 的 actor 输入 = `z_rl + proprio + ref_chunk`，训练时按 `reference_dropout_prob` 随机丢弃 ref_chunk，使 policy 学会不依赖参考动作。
+
+### Stage 2 Online（真机在线 RL，可选）
+
+配置：`examples/embodiment/config/aloha_sandwich_rlt_stage2_online.yaml`。
+`task_type=embodied`：rollout 在真机执行，`rollout.rlt_feature_model`（冻结 Stage1）实时提取 `{z_rl, proprio, ref_chunk}` 进 buffer，MLP actor 边收集边更新。
+
+### 部署（policy server）
+
+```bash
+bash examples/serving/scripts/run_serve_pi05_aloha.sh \
+  --config examples/serving/config/serve_pi05_aloha_sandwich.yaml
+```
+
+- 加载 **Stage 1** checkpoint（完整 Pi0.5 + RLT），`predict_action_batch(mode="eval")` 直接 VLA 推理
+- 协议：openpi-client WebSocket，默认端口 **8001**，返回 `[16, 14]` 最终 ALOHA absolute actions
+- norm stats 严格从 `<checkpoint_dir>/<repo_id>/norm_stats.json` 加载，禁止 fallback
+- 契约/哈希见 `docs/deploy/manifest_sandwich_s1_15000.md`
+
+### 一致性硬要求
+
+1. `repo_id` / `config_name` 全程一致（`pi05_sandwich_merged_all_0805` / `pi05_aloha_robotwin`），norm stats 必须同源；
+2. `rlt_feature_model.openpi.action_chunk` = `actor.model.ref_num_action_chunks`；
+3. Stage1 的 `rlt_*` 参数（`prefix_seq_len=1024`、`image_only=False`、`use_mask=True`）在 Replay Buffer 与 Stage2 feature model 中必须复刻；
+4. 部署端 client 必须用 `action_horizon=16`，不能使用 OpenPI 默认的 25。
+
+### 仓库内参考
+
+- RLT 核心模块：`rlinf/models/embodiment/modules/rlt_token_transformer.py`、`rlinf/models/embodiment/openpi/openpi_action_model.py`（`extract_rlt_obs`）
+- Stage2 actor：`rlinf/models/embodiment/mlp_policy/rlt_mlp_policy.py`、`rlinf/workers/actor/fsdp_offline_rlt_ac_policy_worker.py`
+- 在线 rollout：`rlinf/algorithms/rlt/rollout.py`、`rlinf/workers/actor/rlt_ac_policy_worker.py`
+
 ## What's NEW!
 - [2026/06] 🔥 RLinf supports STEAM for offline advantage estimation and policy optimization. Doc: [STEAM](https://rlinf.readthedocs.io/en/latest/rst_source/examples/embodied/steam.html).
 - [2026/06] 🔥 RLinf supports reinforcement learning fine-tuning for [GR00T-N1.7](https://github.com/NVIDIA/Isaac-GR00T). Doc: [RL on GR00T-N1.7](https://rlinf.readthedocs.io/en/latest/rst_source/examples/embodied/gr00t.html).
