@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import torch
+
 from rlinf.config import torch_dtype_from_precision
 from rlinf.models.embodiment.openpi_rlinf.utils.rlt_utils import (
     FULL_WEIGHTS_CANDIDATES,
@@ -27,6 +29,21 @@ from rlinf.models.embodiment.openpi_rlinf.utils.rlt_utils import (
 from rlinf.utils.logging import get_logger
 
 logger = get_logger()
+
+
+def _pi0_config_dtype(target_dtype: torch.dtype | None) -> str:
+    """Return the Pi0 compute-dtype name matching the model precision."""
+    if target_dtype is None:
+        return "bfloat16"
+    dtype_names = {
+        torch.float32: "float32",
+        torch.bfloat16: "bfloat16",
+        torch.float16: "float16",
+    }
+    try:
+        return dtype_names[target_dtype]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported OpenPI model dtype: {target_dtype}") from exc
 
 
 def get_model(cfg: Any, torch_dtype: Any = None) -> Any:
@@ -76,7 +93,7 @@ def get_model(cfg: Any, torch_dtype: Any = None) -> Any:
         "action_dim": int(model_cfg.model_action_dim),
         "paligemma_variant": str(model_cfg.paligemma_variant),
         "action_expert_variant": str(model_cfg.action_expert_variant),
-        "dtype": "bfloat16",
+        "dtype": _pi0_config_dtype(target_dtype),
         "pcd": False,
     }
     discrete_state_input = OmegaConf.select(
@@ -146,6 +163,7 @@ def get_model(cfg: Any, torch_dtype: Any = None) -> Any:
             wrapper,
             full_weights_path,
             expect_rlt=bool(OmegaConf.select(model_cfg, "use_rlt", default=False)),
+            strict=bool(OmegaConf.select(cfg, "strict_load", default=False)),
         )
 
     source = full_weights_path if full_weights_path is not None else safetensors_path

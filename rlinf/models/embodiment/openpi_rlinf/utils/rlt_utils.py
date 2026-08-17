@@ -142,7 +142,13 @@ def _normalize_wrapper_state_dict(state_dict):
     return normalized
 
 
-def load_full_wrapper_weights(wrapper, weights_path, *, expect_rlt: bool) -> None:
+def load_full_wrapper_weights(
+    wrapper,
+    weights_path,
+    *,
+    expect_rlt: bool,
+    strict: bool = False,
+) -> None:
     """Load an RLinf full-wrapper checkpoint into an OpenPI_RLinf wrapper."""
     import torch
 
@@ -155,6 +161,11 @@ def load_full_wrapper_weights(wrapper, weights_path, *, expect_rlt: bool) -> Non
             "openpi_rlinf RLT checkpoint has no rlt_module.* weights. "
             "Stage2 must consume a Stage1 checkpoint trained with openpi.use_rlt=True."
         )
+
+    if strict:
+        wrapper.load_state_dict(state_dict, strict=True)
+        logger.info("openpi_rlinf: strict-loaded checkpoint from %s", weights_path)
+        return
 
     incompatible = wrapper.load_state_dict(state_dict, strict=False)
     unexpected = list(incompatible.unexpected_keys)
