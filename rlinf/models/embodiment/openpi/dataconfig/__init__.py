@@ -452,6 +452,24 @@ _CONFIGS = [
         num_train_steps=20_000,
     ),
     TrainConfig(
+        name="pi05_aloha_robotwin_sandwich",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            discrete_state_input=True,
+            action_horizon=16,
+        ),
+        data=LeRobotAlohaDataConfig(
+            repo_id="aloha_sandwich",
+            base_config=DataConfig(prompt_from_task=True),
+            assets=AssetsConfig(
+                assets_dir="checkpoints/torch/pi05_aloha_robotwin/assets"
+            ),
+            extra_delta_transform=True,
+        ),
+        pytorch_weight_path="checkpoints/torch/pi05_base",
+        num_train_steps=50_000,
+    ),
+    TrainConfig(
         name="pi0_behavior",
         model=pi0_config.Pi0Config(),
         data=LeRobotBehaviorDataConfig(

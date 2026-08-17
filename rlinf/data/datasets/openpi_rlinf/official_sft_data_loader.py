@@ -58,7 +58,9 @@ def build_official_openpi_sft_dataloader(
         repo_id=repo_id,
         data_kwargs=getattr(model_cfg, "openpi_data", None),
     )
-    if model_type == SupportedModel.OPENPI_RLINF:
+    if model_type == SupportedModel.OPENPI:
+        config = _override_legacy_openpi_action_horizon(model_cfg, config)
+    elif model_type == SupportedModel.OPENPI_RLINF:
         config = dataclasses.replace(
             config,
             num_workers=int(
@@ -91,6 +93,44 @@ def get_official_openpi_sft_num_batches(data_loader: Any) -> int:
 def is_official_openpi_sft_dataloader(data_loader: Any) -> bool:
     """Return whether ``data_loader`` has OpenPI's loader wrapper layout."""
     return getattr(data_loader, "_data_loader", None) is not None
+
+
+def _override_legacy_openpi_action_horizon(model_cfg: Any, openpi_config: Any) -> Any:
+    """Apply and validate a legacy OpenPI action-horizon override.
+
+    The official loader derives dataset action timestamps from the OpenPI
+    model action horizon. Legacy RLinf OpenPI models apply their model
+    overrides later, so the dataloader must receive the same horizon here.
+    """
+    requested_horizon = model_cfg.openpi.get("action_horizon")
+    if requested_horizon is None:
+        return openpi_config
+
+    requested_horizon = int(requested_horizon)
+    if requested_horizon <= 0:
+        raise ValueError(
+            "actor.model.openpi.action_horizon must be positive, "
+            f"got {requested_horizon}."
+        )
+
+    model_horizon = int(model_cfg.num_action_chunks)
+    output_chunk = int(model_cfg.openpi.get("action_chunk", model_horizon))
+    if (model_horizon, output_chunk) != (
+        requested_horizon,
+        requested_horizon,
+    ):
+        raise ValueError(
+            "Legacy OpenPI SFT action horizon must match the model and output "
+            f"chunk: action_horizon={requested_horizon}, "
+            f"num_action_chunks={model_horizon}, action_chunk={output_chunk}."
+        )
+
+    return dataclasses.replace(
+        openpi_config,
+        model=dataclasses.replace(
+            openpi_config.model, action_horizon=requested_horizon
+        ),
+    )
 
 
 def _validate_openpi_rlinf_model_shape(model_cfg: Any, openpi_config: Any) -> None:
