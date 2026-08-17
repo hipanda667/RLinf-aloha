@@ -59,6 +59,16 @@
          在 Dexmal DOS-W1 双臂机器人上训练 Flow Matching + SAC 抓取任务
        </p>
      </div>
+     <div style="flex: 1 1 30%; max-width: 300px; text-align: center;">
+       <a href="embodied/aloha.html" style="display: block;"><img src="https://tonyzhaozh.github.io/aloha/resources/algo.png"
+            style="width: 100%; height: 200px; object-fit: cover; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.15);" /></a>
+       <p style="margin-top: 8px; font-size: 14px; line-height: 1.4;">
+         <a href="embodied/aloha.html" style="text-decoration: underline; color: blue;">
+           <b>ALOHA</b>
+         </a><br>
+         面向双臂三明治制作运行 π₀.₅ RLT SFT、replay 转换、离线 Stage-2 训练与严格部署
+       </p>
+     </div>
 
    </div>
 
@@ -71,3 +81,4 @@
    GimArm <embodied/gim_arm>
    XSquare Turtle2 <embodied/xsquare_turtle2>
    DOS-W1 <embodied/dosw1>
+   ALOHA <embodied/aloha>
