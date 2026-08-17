@@ -37,9 +37,11 @@ inspecting the real sandwich dataset schema.
 from __future__ import annotations
 
 import glob
+import hashlib
+import json
 import os
+import re
 import sys
-import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -55,46 +57,54 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from rlinf.data.embodied_io_struct import Trajectory
-from rlinf.data.replay_buffer import TrajectoryReplayBuffer
-from rlinf.models import get_model
-
+from rlinf.data.embodied_io_struct import Trajectory  # noqa: E402
+from rlinf.data.replay_buffer import TrajectoryReplayBuffer  # noqa: E402
+from rlinf.models import get_model  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # User-editable configuration.
 # ---------------------------------------------------------------------------
 
-# Replace this with the final Stage 1 checkpoint directory when it finishes.
-STAGE1_MODEL_PATH = (
-    "/inspire/qb-ilm/project/robot-reasoning/czxs253130583/yushun/RLinf-worktree-rltoken-anhao/results/rlt_stage1_sft_pi05_sandwich_h200_2gpu/rlt_stage1_sft_pi05_sandwich_h100_2gpu/checkpoints/global_step_20000/actor"
-)
-
-HDF5_DIR = (
-    "/inspire/qb-ilm/project/robot-reasoning/czxs253130583/yushun/"
-    "aloha-data/sandwich_rl"
-)
-
-OUTPUT_BUFFER_DIR = os.environ.get(
-    "OUTPUT_BUFFER_DIR",
+STAGE1_MODEL_PATH = os.environ.get(
+    "STAGE1_MODEL_PATH",
     (
-        "/inspire/qb-ilm/project/robot-reasoning/czxs253130583/yushun/"
-        "RLinf-worktree-rltoken-anhao/results/"
-        "rlt_stage2_sandwich_replay_buffer"
+        "/inspire/hdd/global_user/czxs253130583/fangchuan/work/RL/output/"
+        "RLtoken/stage1/"
+        "rlt_stage1_sft_pi05_sandwich_merged_all_0805_corrected_norm_"
+        "16chunk_50k_bz16_h100_2gpu/"
+        "rlt_stage1_sft_pi05_sandwich_merged_all_0805_corrected_norm_"
+        "16chunk_50k_bz16_h100_2gpu/checkpoints/global_step_15000/actor"
     ),
 )
+HDF5_DIR = os.environ.get(
+    "HDF5_DIR",
+    (
+        "/inspire/qb-ilm/project/robot-reasoning/czxs253130583/yushun/"
+        "aloha-data/sandwich_rl"
+    ),
+)
+OUTPUT_BUFFER_DIR = os.environ.get(
+    "OUTPUT_BUFFER_DIR",
+    str(REPO_ROOT / "results" / "rlt_stage2_sandwich_replay_buffer_h16"),
+)
 
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-BATCH_SIZE = 8
-
-# new add
+DEVICE = os.environ.get(
+    "CONVERSION_DEVICE", "cuda" if torch.cuda.is_available() else "cpu"
+)
+BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "8"))
 MAX_EPISODES = int(os.environ.get("MAX_EPISODES", "0"))
+EPISODE_IDS = tuple(
+    int(value)
+    for value in os.environ.get("EPISODE_IDS", "").split(",")
+    if value.strip()
+)
 
-TASK_DESCRIPTION = "make a sandwich"
+TASK_DESCRIPTION = os.environ.get("TASK_DESCRIPTION", "make a sandwich")
+RLT_REPO_ID = os.environ.get("RLT_REPO_ID", "pi05_sandwich_merged_all_0805")
 
-# RLT Stage2 config uses 10 action chunks and 14D ALOHA actions.
-ACTION_DIM = 14
-ACTION_CHUNK = 10
-ACTION_STRIDE = 10
+ACTION_DIM = int(os.environ.get("ACTION_DIM", "14"))
+ACTION_CHUNK = int(os.environ.get("ACTION_CHUNK", "16"))
+ACTION_STRIDE = int(os.environ.get("ACTION_STRIDE", "16"))
 
 # How to convert scalar or single-element episode rewards into per-step rewards.
 # "final" is usually correct for sparse episode-level success rewards;
@@ -109,13 +119,16 @@ RLT_FEATURE_MODEL_CFG = {
     "is_lora": False,
     "model_path": STAGE1_MODEL_PATH,
     "openpi_data": {
-        "repo_id": "pi05_sandwich_new_all",
+        "repo_id": RLT_REPO_ID,
     },
     "openpi": {
         "config_name": "pi05_aloha_robotwin",
         "num_images_in_input": 3,
-        "action_chunk": 50,
+        "action_horizon": ACTION_CHUNK,
+        "action_chunk": ACTION_CHUNK,
+        "action_env_dim": ACTION_DIM,
         "num_steps": 4,
+        "train_expert_only": False,
         "state_indices": [],
         "noise_method": "flow_noise",
         "noise_params": [0.16, 0.12, 200],
@@ -202,8 +215,7 @@ def _read_first_existing(h5_file: Any, candidates: tuple[str, ...]) -> np.ndarra
         if key in h5_file:
             return np.asarray(h5_file[key])
     raise KeyError(
-        "None of the candidate keys exists in the HDF5 file: "
-        f"{', '.join(candidates)}"
+        f"None of the candidate keys exists in the HDF5 file: {', '.join(candidates)}"
     )
 
 
@@ -235,17 +247,18 @@ def _normalize_images(images: np.ndarray) -> np.ndarray:
 
 
 def _decode_compressed_image(item: object) -> np.ndarray:
-    import cv2
+    from io import BytesIO
+
+    from PIL import Image
 
     if isinstance(item, np.ndarray) and item.ndim == 0:
         item = item.item()
     encoded = bytes(item)
-    array = np.frombuffer(encoded, dtype=np.uint8)
-    image_bgr = cv2.imdecode(array, cv2.IMREAD_COLOR)
-    if image_bgr is None:
-        raise ValueError("Failed to decode compressed image bytes from HDF5.")
-    image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-    return image_rgb
+    try:
+        with Image.open(BytesIO(encoded)) as image:
+            return np.asarray(image.convert("RGB")).copy()
+    except Exception as exc:
+        raise ValueError("Failed to decode compressed image bytes from HDF5.") from exc
 
 
 def _image_tensor_for_indices(
@@ -338,9 +351,7 @@ def _parse_human_teleop(
                 if end > start:
                     flags[start:end] = True
             actions = raw_human_actions
-        elif raw_human.ndim == 1 or (
-            raw_human.ndim == 2 and raw_human.shape[-1] == 1
-        ):
+        elif raw_human.ndim == 1 or (raw_human.ndim == 2 and raw_human.shape[-1] == 1):
             flags = raw_human.reshape(num_steps).astype(bool)
             actions = raw_human_actions
         else:
@@ -367,25 +378,30 @@ def _parse_human_teleop(
     return flags.astype(bool, copy=False), actions
 
 
+def _trim_frame_aligned_human_data(
+    value: np.ndarray | None,
+    transition_length: int,
+) -> np.ndarray | None:
+    """Trim frame-aligned human data while preserving segment arrays."""
+    if value is None:
+        return None
+    value = np.asarray(value)
+    if value.ndim == 2 and value.shape[-1] == 2:
+        return value
+    return value[:transition_length]
+
+
 def load_hdf5_episode(path: str) -> EpisodeArrays:
-    """Load one ALOHA HDF5 episode into normalized arrays."""
+    """Load one ALOHA episode as ``T`` observations and ``T-1`` transitions."""
     h5py = _require_h5py()
     with h5py.File(path, "r") as f:
         states = _normalize_2d("states", _read_first_existing(f, STATE_KEY_CANDIDATES))
         actions = _normalize_2d(
             "actions", _read_first_existing(f, ACTION_KEY_CANDIDATES), width=ACTION_DIM
         )[:, :ACTION_DIM]
-        rewards = _normalize_rewards(
-            _read_first_existing(f, REWARD_KEY_CANDIDATES),
-            length=actions.shape[0],
-        )
+        raw_rewards = _read_first_existing(f, REWARD_KEY_CANDIDATES)
         raw_human = _read_optional(f, HUMAN_TELEOP_KEY_CANDIDATES)
         raw_human_actions = _read_optional(f, HUMAN_ACTION_KEY_CANDIDATES)
-        human_flags, human_actions = _parse_human_teleop(
-            raw_human=raw_human,
-            raw_human_actions=raw_human_actions,
-            default_actions=actions,
-        )
 
         main_images = _normalize_images(
             _read_first_existing(f, MAIN_IMAGE_KEY_CANDIDATES)
@@ -397,29 +413,128 @@ def load_hdf5_episode(path: str) -> EpisodeArrays:
         if extra_view_images is not None:
             extra_view_images = _normalize_images(extra_view_images)
 
-    length = min(
-        states.shape[0],
-        actions.shape[0],
-        rewards.shape[0],
-        main_images.shape[0],
+    observation_lengths = [states.shape[0], actions.shape[0], main_images.shape[0]]
+    if wrist_images is not None:
+        observation_lengths.append(wrist_images.shape[0])
+    if extra_view_images is not None:
+        observation_lengths.append(extra_view_images.shape[0])
+    observation_length = min(observation_lengths)
+    if observation_length < 2:
+        raise ValueError(
+            f"Episode {path} needs at least two observations, got {observation_length}."
+        )
+
+    # action[t] is the transition obs[t] -> obs[t+1]. The final frame has no
+    # valid next observation and is therefore excluded as an action.
+    transition_length = observation_length - 1
+    actions = actions[:transition_length]
+    rewards = _normalize_rewards(raw_rewards, length=transition_length)
+    raw_human = _trim_frame_aligned_human_data(raw_human, transition_length)
+    raw_human_actions = _trim_frame_aligned_human_data(
+        raw_human_actions, transition_length
     )
+    human_flags, human_actions = _parse_human_teleop(
+        raw_human=raw_human,
+        raw_human_actions=raw_human_actions,
+        default_actions=actions,
+    )
+
     return EpisodeArrays(
-        states=states[:length],
-        actions=actions[:length],
-        rewards=rewards[:length],
-        human_flags=human_flags[:length],
-        human_actions=human_actions[:length] if human_actions is not None else None,
-        main_images=main_images[:length],
-        wrist_images=wrist_images[:length] if wrist_images is not None else None,
-        extra_view_images=extra_view_images[:length]
-        if extra_view_images is not None
-        else None,
+        states=states[:observation_length],
+        actions=actions,
+        rewards=rewards,
+        human_flags=human_flags,
+        human_actions=human_actions,
+        main_images=main_images[:observation_length],
+        wrist_images=(
+            wrist_images[:observation_length] if wrist_images is not None else None
+        ),
+        extra_view_images=(
+            extra_view_images[:observation_length]
+            if extra_view_images is not None
+            else None
+        ),
     )
+
+
+def _stage1_full_weights_path() -> Path:
+    checkpoint_dir = Path(STAGE1_MODEL_PATH)
+    candidates = (
+        checkpoint_dir / "model_state_dict" / "full_weights.pt",
+        checkpoint_dir / "actor" / "model_state_dict" / "full_weights.pt",
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    raise FileNotFoundError(
+        "Stage 1 full_weights.pt was not found under "
+        f"{STAGE1_MODEL_PATH}. Checked: {candidates}"
+    )
+
+
+def _stage1_norm_stats_path() -> Path:
+    path = Path(STAGE1_MODEL_PATH) / RLT_REPO_ID / "norm_stats.json"
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"Stage 1 norm stats do not exist at required path: {path}"
+        )
+    return path
+
+
+def _sha256_file(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        while chunk := file.read(chunk_size):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _validate_stage1_checkpoint_contract(model: torch.nn.Module) -> None:
+    checkpoint = torch.load(
+        _stage1_full_weights_path(),
+        map_location="cpu",
+        mmap=True,
+        weights_only=True,
+    )
+    if not isinstance(checkpoint, dict):
+        raise TypeError(
+            "Stage 1 full_weights.pt must contain a state dict, got "
+            f"{type(checkpoint).__name__}."
+        )
+
+    model_state = model.state_dict()
+    checkpoint_keys = set(checkpoint)
+    model_keys = set(model_state)
+    missing = sorted(model_keys - checkpoint_keys)
+    unexpected = sorted(checkpoint_keys - model_keys)
+    mismatched = sorted(
+        key
+        for key in checkpoint_keys & model_keys
+        if tuple(checkpoint[key].shape) != tuple(model_state[key].shape)
+    )
+    if missing or unexpected or mismatched:
+        raise RuntimeError(
+            "Stage 1 checkpoint contract mismatch: "
+            f"missing={missing[:10]}, unexpected={unexpected[:10]}, "
+            f"shape_mismatches={mismatched[:10]}."
+        )
 
 
 def build_rlt_feature_model() -> torch.nn.Module:
+    if BATCH_SIZE <= 0:
+        raise ValueError(f"BATCH_SIZE must be positive, got {BATCH_SIZE}.")
+    if ACTION_CHUNK <= 0 or ACTION_STRIDE <= 0:
+        raise ValueError(
+            "ACTION_CHUNK and ACTION_STRIDE must be positive, got "
+            f"{ACTION_CHUNK} and {ACTION_STRIDE}."
+        )
+    if DEVICE.startswith("cuda") and not torch.cuda.is_available():
+        raise RuntimeError(f"CONVERSION_DEVICE={DEVICE!r}, but CUDA is unavailable.")
+
+    _stage1_norm_stats_path()
     cfg = OmegaConf.create(RLT_FEATURE_MODEL_CFG)
     model = get_model(cfg)
+    _validate_stage1_checkpoint_contract(model)
     model.to(DEVICE)
     model.eval()
     model.requires_grad_(False)
@@ -476,16 +591,52 @@ def extract_rlt_obs_for_indices(
             )
             for key in chunks:
                 chunks[key].append(rlt_obs[key].detach().cpu().float().contiguous())
-    return {key: torch.cat(values, dim=0) for key, values in chunks.items()}
+    features = {key: torch.cat(values, dim=0) for key, values in chunks.items()}
+    expected_shapes = {
+        "z_rl": (2048,),
+        "proprio": (ACTION_DIM,),
+        "ref_chunk": (ACTION_CHUNK, ACTION_DIM),
+    }
+    for key, suffix in expected_shapes.items():
+        value = features[key]
+        if tuple(value.shape[-len(suffix) :]) != suffix:
+            raise ValueError(
+                f"Unexpected {key} shape {tuple(value.shape)}; "
+                f"expected suffix {suffix}."
+            )
+        if not torch.isfinite(value).all():
+            raise ValueError(f"Stage 1 produced non-finite values in {key}.")
+    return features
 
 
-def _pad_take(array: np.ndarray, start: int, length: int) -> np.ndarray:
+def _pad_take(
+    array: np.ndarray,
+    start: int,
+    length: int,
+    *,
+    pad_value: float | bool | None = None,
+) -> np.ndarray:
+    """Take a fixed window and pad its tail.
+
+    ``pad_value=None`` repeats the final source row, which is appropriate for
+    actions in a terminal chunk. Rewards and intervention flags must pass an
+    explicit zero/False value so terminal labels are not duplicated.
+    """
     end = start + length
     if end <= array.shape[0]:
         return array[start:end]
+    if array.shape[0] == 0:
+        raise ValueError("Cannot pad an empty array.")
     pad_count = end - array.shape[0]
     tail = array[start:]
-    pad = np.repeat(array[-1:], pad_count, axis=0)
+    if pad_value is None:
+        pad = np.repeat(array[-1:], pad_count, axis=0)
+    else:
+        pad = np.full(
+            (pad_count, *array.shape[1:]),
+            pad_value,
+            dtype=array.dtype,
+        )
     return np.concatenate([tail, pad], axis=0)
 
 
@@ -507,9 +658,14 @@ def build_chunked_trajectory(
 
     for start in starts.tolist():
         action_chunk = _pad_take(episode.actions, start, ACTION_CHUNK)
-        reward_chunk = _pad_take(episode.rewards[:, None], start, ACTION_CHUNK)[:, 0]
+        reward_chunk = _pad_take(
+            episode.rewards[:, None], start, ACTION_CHUNK, pad_value=0.0
+        )[:, 0]
         human_flag_chunk = _pad_take(
-            episode.human_flags[:, None].astype(np.bool_), start, ACTION_CHUNK
+            episode.human_flags[:, None].astype(np.bool_),
+            start,
+            ACTION_CHUNK,
+            pad_value=False,
         )[:, 0]
 
         human_actions = (
@@ -528,8 +684,10 @@ def build_chunked_trajectory(
         truncations = np.zeros((ACTION_CHUNK,), dtype=np.bool_)
         dones = np.zeros((ACTION_CHUNK,), dtype=np.bool_)
         if is_last_transition:
-            terminations[-1] = True
-            dones[-1] = True
+            valid_count = min(ACTION_CHUNK, episode.actions.shape[0] - start)
+            terminal_index = valid_count - 1
+            terminations[terminal_index] = True
+            dones[terminal_index] = True
 
         action_chunks.append(final_action_chunk.reshape(-1))
         reward_chunks.append(reward_chunk)
@@ -576,25 +734,27 @@ def build_chunked_trajectory(
     return trajectory
 
 
+def _transition_starts(num_transitions: int) -> np.ndarray:
+    if num_transitions < 1:
+        return np.empty((0,), dtype=np.int64)
+    return np.arange(0, num_transitions, ACTION_STRIDE, dtype=np.int64)
+
+
 def convert_episode(
     *,
     feature_model: torch.nn.Module,
     hdf5_path: str,
+    model_weights_id: str,
 ) -> Trajectory | None:
     episode = load_hdf5_episode(hdf5_path)
-    if episode.actions.shape[0] < 2:
+    starts = _transition_starts(episode.actions.shape[0])
+    if starts.size == 0:
         return None
 
-    max_start = max(0, episode.actions.shape[0] - 1)
-    starts = np.arange(0, max_start, ACTION_STRIDE, dtype=np.int64)
-    if starts.size == 0:
-        starts = np.asarray([0], dtype=np.int64)
-    next_indices = np.minimum(starts + ACTION_CHUNK, episode.actions.shape[0] - 1)
+    next_indices = np.minimum(starts + ACTION_CHUNK, episode.states.shape[0] - 1)
 
     curr_features = extract_rlt_obs_for_indices(feature_model, episode, starts)
     next_features = extract_rlt_obs_for_indices(feature_model, episode, next_indices)
-    model_weights_id = uuid.uuid5(uuid.NAMESPACE_URL, hdf5_path).hex[:12]
-
     return build_chunked_trajectory(
         episode=episode,
         curr_features=curr_features,
@@ -604,20 +764,103 @@ def convert_episode(
     )
 
 
-def convert_directory() -> None:
-    hdf5_paths = sorted(glob.glob(os.path.join(HDF5_DIR, "episode_*.hdf5")))
-    if not hdf5_paths:
+def _episode_number(path: str) -> int:
+    match = re.search(r"episode_(\d+)\.hdf5$", path)
+    if match is None:
+        raise ValueError(f"Unexpected episode filename: {path}")
+    return int(match.group(1))
+
+
+def _select_hdf5_paths() -> tuple[list[str], int]:
+    all_paths = sorted(
+        glob.glob(os.path.join(HDF5_DIR, "episode_*.hdf5")),
+        key=_episode_number,
+    )
+    if not all_paths:
         raise FileNotFoundError(f"No episode_*.hdf5 files found under {HDF5_DIR}")
 
-    total_episodes = len(hdf5_paths)
-
+    selected = all_paths
+    if EPISODE_IDS:
+        by_id = {_episode_number(path): path for path in all_paths}
+        missing = sorted(set(EPISODE_IDS) - set(by_id))
+        if missing:
+            raise FileNotFoundError(
+                f"Requested EPISODE_IDS are missing under {HDF5_DIR}: {missing}"
+            )
+        selected = [by_id[episode_id] for episode_id in EPISODE_IDS]
     if MAX_EPISODES > 0:
-        hdf5_paths = hdf5_paths[:MAX_EPISODES]
+        selected = selected[:MAX_EPISODES]
+    return selected, len(all_paths)
 
+
+def _write_conversion_manifest(
+    *,
+    output_path: Path,
+    hdf5_paths: list[str],
+    full_weights_sha256: str,
+    norm_stats_sha256: str,
+    replay_stats: dict[str, float],
+) -> None:
+    manifest = {
+        "version": 1,
+        "stage1": {
+            "model_path": str(Path(STAGE1_MODEL_PATH).resolve()),
+            "full_weights_path": str(_stage1_full_weights_path().resolve()),
+            "full_weights_sha256": full_weights_sha256,
+            "norm_stats_path": str(_stage1_norm_stats_path().resolve()),
+            "norm_stats_sha256": norm_stats_sha256,
+            "repo_id": RLT_REPO_ID,
+        },
+        "source": {
+            "hdf5_dir": str(Path(HDF5_DIR).resolve()),
+            "episodes": [
+                {
+                    "path": str(Path(path).resolve()),
+                    "size_bytes": Path(path).stat().st_size,
+                    "mtime_ns": Path(path).stat().st_mtime_ns,
+                }
+                for path in hdf5_paths
+            ],
+        },
+        "conversion": {
+            "device": DEVICE,
+            "batch_size": BATCH_SIZE,
+            "task_description": TASK_DESCRIPTION,
+            "action_dim": ACTION_DIM,
+            "action_chunk": ACTION_CHUNK,
+            "action_stride": ACTION_STRIDE,
+            "scalar_reward_mode": SCALAR_REWARD_MODE,
+            "transition_semantics": "T_observations_to_T_minus_1_transitions",
+        },
+        "replay_buffer": replay_stats,
+    }
+    manifest_path = output_path / "conversion_manifest.json"
+    temp_path = manifest_path.with_suffix(".json.tmp")
+    temp_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
+    temp_path.replace(manifest_path)
+
+
+def convert_directory() -> None:
+    output_path = Path(OUTPUT_BUFFER_DIR)
+    if output_path.exists():
+        raise FileExistsError(
+            f"Refusing to overwrite existing replay-buffer path: {output_path}"
+        )
+
+    hdf5_paths, total_episodes = _select_hdf5_paths()
+    print(f"Found {total_episodes} episodes; converting {len(hdf5_paths)} episodes.")
     print(
-        f"Found {total_episodes} episodes; "
-        f"converting {len(hdf5_paths)} episodes."
+        "Conversion contract: "
+        f"device={DEVICE}, batch_size={BATCH_SIZE}, action_dim={ACTION_DIM}, "
+        f"action_chunk={ACTION_CHUNK}, action_stride={ACTION_STRIDE}, "
+        f"repo_id={RLT_REPO_ID}."
     )
+
+    full_weights_sha256 = _sha256_file(_stage1_full_weights_path())
+    norm_stats_sha256 = _sha256_file(_stage1_norm_stats_path())
+    model_weights_id = full_weights_sha256[:12]
+    print(f"Stage 1 full weights SHA256: {full_weights_sha256}")
+    print(f"Stage 1 norm stats SHA256: {norm_stats_sha256}")
 
     feature_model = build_rlt_feature_model()
     replay_buffer = TrajectoryReplayBuffer(
@@ -630,17 +873,27 @@ def convert_directory() -> None:
     )
 
     for hdf5_path in tqdm(hdf5_paths, desc="Converting HDF5 episodes"):
-        trajectory = convert_episode(feature_model=feature_model, hdf5_path=hdf5_path)
+        trajectory = convert_episode(
+            feature_model=feature_model,
+            hdf5_path=hdf5_path,
+            model_weights_id=model_weights_id,
+        )
         if trajectory is None:
             continue
         replay_buffer.add_trajectories([trajectory])
 
-    output_path = Path(OUTPUT_BUFFER_DIR)
-    output_path.mkdir(parents=True, exist_ok=True)
     replay_buffer.save_checkpoint(str(output_path))
+    replay_stats = replay_buffer.get_stats()
+    _write_conversion_manifest(
+        output_path=output_path,
+        hdf5_paths=hdf5_paths,
+        full_weights_sha256=full_weights_sha256,
+        norm_stats_sha256=norm_stats_sha256,
+        replay_stats=replay_stats,
+    )
     replay_buffer.close()
     print(f"Saved RLinf replay buffer to {output_path}")
-    print(f"Stats: {replay_buffer.get_stats()}")
+    print(f"Stats: {replay_stats}")
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import dataclasses
 import os
 from typing import Any
 
@@ -49,6 +50,19 @@ class FSDPVlaSftWorker(FSDPSftWorker):
                 repo_id=repo_id,
                 data_kwargs=getattr(self.cfg.actor, "openpi_data", None),
             )
+            # The OpenPI model overrides are also the source of truth for the
+            # action horizon used by the LeRobot data loader.  Without this
+            # bridge, pi05_aloha_robotwin keeps its default horizon of 50 even
+            # when the RLT experiment explicitly requests 16.
+            openpi_overrides = self.cfg.actor.model.openpi
+            if openpi_overrides.get("action_horizon") is not None:
+                config = dataclasses.replace(
+                    config,
+                    model=dataclasses.replace(
+                        config.model,
+                        action_horizon=int(openpi_overrides.action_horizon),
+                    ),
+                )
             data_loader = openpi_data_loader.create_data_loader(
                 config, framework="pytorch", shuffle=True
             )

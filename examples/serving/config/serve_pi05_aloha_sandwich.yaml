@@ -1,0 +1,43 @@
+# Deployment contract: RLinf Stage-1 OpenPI Pi0.5 RLT SFT — ALOHA "make a sandwich".
+#
+# This file is the single source of truth for serving the Stage-1 SFT model.
+# The values below must match the training config
+# examples/sft/config/rlt_stage1_sft_openpi_pi05_sandwich_merged_all_0805_16chunk_50k.yaml
+# (action_horizon/action_chunk/num_action_chunks=16, use_rlt=True, rlt_alpha=1.0, ...).
+
+server:
+  # Bind address / port for the openpi-client WebSocket policy server.
+  host: "0.0.0.0"
+  port: 8001
+  device: "cuda"
+  # Fail on state-dict missing/unexpected keys instead of silently ignoring them.
+  strict_load: true
+
+checkpoint:
+  # Must contain model_state_dict/full_weights.pt and <repo_id>/norm_stats.json.
+  dir: "/inspire/hdd/global_user/czxs253130583/fangchuan/work/RL/output/RLtoken/stage1/rlt_stage1_sft_pi05_sandwich_merged_all_0805_corrected_norm_16chunk_50k_bz16_h100_2gpu/rlt_stage1_sft_pi05_sandwich_merged_all_0805_corrected_norm_16chunk_50k_bz16_h100_2gpu/checkpoints/global_step_15000/actor"
+  # Must equal the training openpi_data.repo_id; selects <repo_id>/norm_stats.json.
+  repo_id: "pi05_sandwich_merged_all_0805"
+  default_prompt: "make a sandwich"
+
+model:
+  action_dim: 14
+  num_action_chunks: 16
+  num_steps: 4
+  config_name: "pi05_aloha_robotwin"
+  openpi:
+    config_name: "pi05_aloha_robotwin"
+    num_images_in_input: 3
+    action_horizon: 16
+    action_chunk: 16
+    action_env_dim: 14
+    train_expert_only: false
+    noise_method: "flow_noise"
+    noise_params: [0.16, 0.12, 200]
+    joint_logprob: true
+    detach_critic_input: true
+    use_rlt: true
+    rlt_alpha: 1.0
+    rlt_prefix_seq_len: 1024
+    rlt_image_only: false
+    rlt_use_mask: true
