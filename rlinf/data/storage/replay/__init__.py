@@ -24,12 +24,18 @@ from rlinf.data.storage.replay.dataset import (
     ReplayBufferDataset,
     replay_buffer_collate_fn,
 )
+from rlinf.data.storage.replay.validation import (
+    ReplayCheckpointInfo,
+    validate_replay_checkpoint,
+)
 
 __all__ = [
     "PreloadReplayBufferDataset",
     "PriorityStore",
+    "ReplayCheckpointInfo",
     "ReplayBufferDataset",
     "TrajectoryCache",
     "TrajectoryReplayBuffer",
     "replay_buffer_collate_fn",
+    "validate_replay_checkpoint",
 ]
