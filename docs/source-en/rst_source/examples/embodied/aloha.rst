@@ -165,7 +165,7 @@ Recreate the validated legacy service only in a separate worktree and virtual en
    bash requirements/install.sh embodied --model openpi \
       --env maniskill_libero --venv .venv-aloha-legacy
    source .venv-aloha-legacy/bin/activate
-   python -m pip install -r \
+   python -m pip install --no-deps -r \
       "$RLINF_INTEGRATION_REPO/requirements/legacy/aloha_pi05_legacy_runtime.txt"
    export SERVING_PYTHON_BIN="$PWD/.venv-aloha-legacy/bin/python"
    bash examples/serving/scripts/run_serve_pi05_aloha.sh \
@@ -173,7 +173,7 @@ Recreate the validated legacy service only in a separate worktree and virtual en
       --repo-id pi05_sandwich_merged_all_0805 \
       --strict-load --smoke-test
 
-What this does: it checks out the exact legacy source without moving either branch, installs the validated dependency snapshot into a dedicated environment, overrides the historical machine-specific checkpoint path, and requires a strict smoke test. The immutable source/configuration identities are recorded in ``examples/serving/config/legacy_pi05_aloha_runtime.yaml``. Never point ``SERVING_PYTHON_BIN`` at the integration environment.
+What this does: it checks out the exact legacy source without moving either branch, installs the validated dependency snapshot into a dedicated environment, overrides the historical machine-specific checkpoint path, and requires a strict smoke test. The snapshot records exact installed distributions, so apply it with ``--no-deps`` after the normal installer; several upstream packages retain stale dependency bounds that conflict with the validated CUDA 12.8 overrides. The immutable source/configuration identities are recorded in ``examples/serving/config/legacy_pi05_aloha_runtime.yaml``. Never point ``SERVING_PYTHON_BIN`` at the integration environment.
 
 .. warning::
 

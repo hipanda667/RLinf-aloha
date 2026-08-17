@@ -1,6 +1,8 @@
 # Captured 2026-08-17 from the isolated CUDA 12.8 environment that passed
 # strict inference with the real legacy ALOHA Stage-1 checkpoint.
 # Keep this environment separate from the openpi_rlinf integration runtime.
+# Apply after requirements/install.sh with pip install --no-deps -r; this is an
+# exact environment snapshot, not a dependency-resolution input.
 absl-py==2.5.0
 accelerate==1.14.0
 aiohappyeyeballs==2.7.1

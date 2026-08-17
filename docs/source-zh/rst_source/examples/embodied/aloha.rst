@@ -165,7 +165,7 @@ Smoke test 要求三个 camera input，拒绝非有限值或非 ``(16, 14)`` 的
    bash requirements/install.sh embodied --model openpi \
       --env maniskill_libero --venv .venv-aloha-legacy
    source .venv-aloha-legacy/bin/activate
-   python -m pip install -r \
+   python -m pip install --no-deps -r \
       "$RLINF_INTEGRATION_REPO/requirements/legacy/aloha_pi05_legacy_runtime.txt"
    export SERVING_PYTHON_BIN="$PWD/.venv-aloha-legacy/bin/python"
    bash examples/serving/scripts/run_serve_pi05_aloha.sh \
@@ -173,7 +173,7 @@ Smoke test 要求三个 camera input，拒绝非有限值或非 ``(16, 14)`` 的
       --repo-id pi05_sandwich_merged_all_0805 \
       --strict-load --smoke-test
 
-此流程会在不移动任何 branch 的前提下 checkout 精确的旧 source，把经过验证的 dependency snapshot 安装到专用环境，覆盖历史 machine-specific checkpoint path，并要求执行 strict smoke test。不可变的 source/configuration identity 记录在 ``examples/serving/config/legacy_pi05_aloha_runtime.yaml`` 中。切勿让 ``SERVING_PYTHON_BIN`` 指向 integration environment。
+此流程会在不移动任何 branch 的前提下 checkout 精确的旧 source，把经过验证的 dependency snapshot 安装到专用环境，覆盖历史 machine-specific checkpoint path，并要求执行 strict smoke test。该 snapshot 记录的是精确的已安装 distribution；正常执行 installer 后，应使用 ``--no-deps`` 应用 snapshot，因为若干 upstream package 仍保留与已验证 CUDA 12.8 override 冲突的旧 dependency bound。不可变的 source/configuration identity 记录在 ``examples/serving/config/legacy_pi05_aloha_runtime.yaml`` 中。切勿让 ``SERVING_PYTHON_BIN`` 指向 integration environment。
 
 .. warning::
 
