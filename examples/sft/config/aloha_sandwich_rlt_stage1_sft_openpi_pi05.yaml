@@ -43,7 +43,9 @@ actor:
     # New checkpoints use the upstream JAX-aligned PyTorch implementation.
     # Legacy OpenPI checkpoints must remain in the pinned legacy runtime.
     model_type: "openpi_rlinf"
-    precision: fp32
+    # A single RTX 4090 cannot hold the 3.35B model plus FP32 Adam state.
+    # Keep model parameters and optimizer state in BF16 for this one-GPU recipe.
+    precision: bf16
     is_lora: False
     model_path: ${oc.env:OPENPI_MODEL_PATH}
     num_action_chunks: 16

@@ -24,7 +24,8 @@ checkpoint:
 
 model:
   action_dim: 14
-  precision: fp32
+  # Match the Stage-1 training checkpoint and Stage-2 feature extractor.
+  precision: bf16
   num_action_chunks: 16
   num_steps: 4
   config_name: "pi05_aloha_robotwin_sandwich"

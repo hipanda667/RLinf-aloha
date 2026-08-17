@@ -55,6 +55,9 @@ def test_aloha_stage_contract_is_consistent_across_configs():
     assert stage1_model.model_type == feature_model.model_type == "openpi_rlinf"
     assert serving.checkpoint.format == "openpi_rlinf"
     assert serving.server.strict_load is True
+    assert stage1_model.precision == "bf16"
+    assert feature_model.precision == "bf16"
+    assert serving_model.precision == "bf16"
 
     assert {
         int(stage1_model.num_action_chunks),
