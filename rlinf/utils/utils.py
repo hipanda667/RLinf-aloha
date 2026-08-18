@@ -306,19 +306,33 @@ def configure_batch_sizes(rank, mbs, gbs, dp=1):
     )
 
 
+def _reduce_mean(values: torch.Tensor, axis=None):
+    # Not every torch backend accepts `axis=None` for a full reduction
+    # (torch-musa raises "bad optional access"), so spell it out.
+    if axis is None:
+        return values.mean()
+    return values.mean(dim=axis)
+
+
+def _reduce_sum(values: torch.Tensor, axis=None):
+    if axis is None:
+        return values.sum()
+    return values.sum(dim=axis)
+
+
 def masked_mean(values: torch.Tensor, mask: torch.Tensor, axis=None):
     """Compute mean of tensor with a masked values."""
     if mask is None:
-        return values.mean(axis=axis)
+        return _reduce_mean(values, axis)
     elif (~mask).all():
-        return (values * mask).sum(axis=axis)
+        return _reduce_sum(values * mask, axis)
     else:
-        return (values * mask).sum(axis=axis) / mask.sum(axis=axis)
+        return _reduce_sum(values * mask, axis) / _reduce_sum(mask, axis)
 
 
 def masked_sum(values: torch.Tensor, mask: torch.Tensor, axis=None):
     """Compute sum of tensor with a masked values."""
-    return (values * mask).sum(axis=axis)
+    return _reduce_sum(values * mask, axis)
 
 
 def seq_mean_token_sum(values: torch.Tensor, mask: torch.Tensor, dim: int = -1):
@@ -631,6 +645,21 @@ def warmup_optimizer_state(optimizer: Optimizer) -> None:
 
     for p in all_params:
         p.grad = saved_grads[p]
+
+    # The empty step above advances each Adam param's step counter to 1, which biases
+    # the first real update through bias correction and diverges from a freshly-built
+    # optimizer. Reset the step counter to 0 so this state initialization is a true
+    # no-op for training dynamics, while preserving the already-zeroed exp_avg/exp_avg_sq
+    # entries so load_state_dict still finds initialized state.
+    for p in all_params:
+        st = optimizer.state.get(p, {})
+        step = st.get("step", None)
+        if step is None:
+            continue
+        if torch.is_tensor(step):
+            step.zero_()
+        else:
+            st["step"] = 0
 
 
 def get_rng_state() -> dict:

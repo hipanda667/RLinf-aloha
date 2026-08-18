@@ -57,36 +57,20 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from rlinf.data.embodied_io_struct import Trajectory  # noqa: E402
-from rlinf.data.replay_buffer import TrajectoryReplayBuffer  # noqa: E402
+from rlinf.data.schema import Trajectory  # noqa: E402
+from rlinf.data.storage.replay import (  # noqa: E402
+    TrajectoryReplayBuffer,
+    validate_replay_checkpoint,
+)
 from rlinf.models import get_model  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # User-editable configuration.
 # ---------------------------------------------------------------------------
 
-STAGE1_MODEL_PATH = os.environ.get(
-    "STAGE1_MODEL_PATH",
-    (
-        "/inspire/hdd/global_user/czxs253130583/fangchuan/work/RL/output/"
-        "RLtoken/stage1/"
-        "rlt_stage1_sft_pi05_sandwich_merged_all_0805_corrected_norm_"
-        "16chunk_50k_bz16_h100_2gpu/"
-        "rlt_stage1_sft_pi05_sandwich_merged_all_0805_corrected_norm_"
-        "16chunk_50k_bz16_h100_2gpu/checkpoints/global_step_15000/actor"
-    ),
-)
-HDF5_DIR = os.environ.get(
-    "HDF5_DIR",
-    (
-        "/inspire/qb-ilm/project/robot-reasoning/czxs253130583/yushun/"
-        "aloha-data/sandwich_rl"
-    ),
-)
-OUTPUT_BUFFER_DIR = os.environ.get(
-    "OUTPUT_BUFFER_DIR",
-    str(REPO_ROOT / "results" / "rlt_stage2_sandwich_replay_buffer_h16"),
-)
+STAGE1_MODEL_PATH = os.environ.get("ALOHA_STAGE1_CHECKPOINT", "")
+HDF5_DIR = os.environ.get("ALOHA_HDF5_DIR", "")
+OUTPUT_BUFFER_DIR = os.environ.get("ALOHA_REPLAY_BUFFER_PATH", "")
 
 DEVICE = os.environ.get(
     "CONVERSION_DEVICE", "cuda" if torch.cuda.is_available() else "cpu"
@@ -100,7 +84,7 @@ EPISODE_IDS = tuple(
 )
 
 TASK_DESCRIPTION = os.environ.get("TASK_DESCRIPTION", "make a sandwich")
-RLT_REPO_ID = os.environ.get("RLT_REPO_ID", "pi05_sandwich_merged_all_0805")
+RLT_REPO_ID = os.environ.get("RLT_REPO_ID", "aloha_sandwich")
 
 ACTION_DIM = int(os.environ.get("ACTION_DIM", "14"))
 ACTION_CHUNK = int(os.environ.get("ACTION_CHUNK", "16"))
@@ -112,23 +96,33 @@ ACTION_STRIDE = int(os.environ.get("ACTION_STRIDE", "16"))
 SCALAR_REWARD_MODE = "final"
 
 # Stage 1 OpenPI feature extractor config. Keep this aligned with
-# examples/embodiment/config/rlt_stage2_ac_mlp.yaml::rollout.rlt_feature_model.
+# aloha_sandwich_rlt_stage2_online_ac_mlp.yaml::rollout.rlt_feature_model.
 RLT_FEATURE_MODEL_CFG = {
-    "model_type": "openpi",
-    "precision": None,
+    "model_type": "openpi_rlinf",
+    "precision": "bf16",
     "is_lora": False,
     "model_path": STAGE1_MODEL_PATH,
+    "num_action_chunks": ACTION_CHUNK,
+    "action_dim": ACTION_DIM,
+    "num_steps": 4,
+    "add_value_head": False,
     "openpi_data": {
         "repo_id": RLT_REPO_ID,
+        "default_prompt": TASK_DESCRIPTION,
     },
     "openpi": {
-        "config_name": "pi05_aloha_robotwin",
+        "task": "eval",
+        "config_name": "pi05_aloha_robotwin_sandwich",
         "num_images_in_input": 3,
         "action_horizon": ACTION_CHUNK,
         "action_chunk": ACTION_CHUNK,
         "action_env_dim": ACTION_DIM,
         "num_steps": 4,
-        "train_expert_only": False,
+        "model_action_dim": 32,
+        "paligemma_variant": "gemma_2b",
+        "action_expert_variant": "gemma_300m",
+        "max_token_len": 200,
+        "discrete_state_input": True,
         "state_indices": [],
         "noise_method": "flow_noise",
         "noise_params": [0.16, 0.12, 200],
@@ -314,11 +308,12 @@ def _normalize_rewards(rewards: np.ndarray, length: int) -> np.ndarray:
 
     if rewards.ndim > 1:
         rewards = rewards.reshape(rewards.shape[0], -1)[:, 0]
-    if rewards.shape[0] != length:
+    if rewards.shape[0] not in {length, length + 1}:
         raise ValueError(
-            f"reward length {rewards.shape[0]} does not match episode length {length}."
+            f"reward length {rewards.shape[0]} must match the {length} transitions "
+            "or include one final observation-aligned value."
         )
-    return rewards.astype(np.float32, copy=False)
+    return rewards[:length].astype(np.float32, copy=False)
 
 
 def _parse_human_teleop(
@@ -392,13 +387,19 @@ def _trim_frame_aligned_human_data(
 
 
 def load_hdf5_episode(path: str) -> EpisodeArrays:
-    """Load one ALOHA episode as ``T`` observations and ``T-1`` transitions."""
+    """Load one ALOHA episode as observations plus aligned transitions.
+
+    Both common ALOHA layouts are accepted: ``T`` actions with an unused final
+    observation-aligned action, and ``T-1`` actions containing transitions
+    only. In both cases the returned episode contains ``T`` observations and
+    ``T-1`` transitions.
+    """
     h5py = _require_h5py()
     with h5py.File(path, "r") as f:
         states = _normalize_2d("states", _read_first_existing(f, STATE_KEY_CANDIDATES))
         actions = _normalize_2d(
             "actions", _read_first_existing(f, ACTION_KEY_CANDIDATES), width=ACTION_DIM
-        )[:, :ACTION_DIM]
+        )
         raw_rewards = _read_first_existing(f, REWARD_KEY_CANDIDATES)
         raw_human = _read_optional(f, HUMAN_TELEOP_KEY_CANDIDATES)
         raw_human_actions = _read_optional(f, HUMAN_ACTION_KEY_CANDIDATES)
@@ -413,20 +414,46 @@ def load_hdf5_episode(path: str) -> EpisodeArrays:
         if extra_view_images is not None:
             extra_view_images = _normalize_images(extra_view_images)
 
-    observation_lengths = [states.shape[0], actions.shape[0], main_images.shape[0]]
-    if wrist_images is not None:
-        observation_lengths.append(wrist_images.shape[0])
-    if extra_view_images is not None:
-        observation_lengths.append(extra_view_images.shape[0])
-    observation_length = min(observation_lengths)
+    if states.shape[-1] != ACTION_DIM:
+        raise ValueError(
+            f"ALOHA states must have width {ACTION_DIM}, got {states.shape[-1]}."
+        )
+    if actions.shape[-1] != ACTION_DIM:
+        raise ValueError(
+            f"ALOHA actions must have width {ACTION_DIM}, got {actions.shape[-1]}."
+        )
+    if wrist_images is None or extra_view_images is None:
+        raise KeyError(
+            "ALOHA conversion requires cam_high, cam_left_wrist, and "
+            "cam_right_wrist image streams."
+        )
+
+    observation_lengths = {
+        "states": states.shape[0],
+        "cam_high": main_images.shape[0],
+        "cam_left_wrist": wrist_images.shape[0],
+        "cam_right_wrist": extra_view_images.shape[0],
+    }
+    if len(set(observation_lengths.values())) != 1:
+        raise ValueError(
+            "ALOHA observation streams must have equal lengths, got "
+            f"{observation_lengths}."
+        )
+    observation_length = next(iter(observation_lengths.values()))
     if observation_length < 2:
         raise ValueError(
             f"Episode {path} needs at least two observations, got {observation_length}."
         )
 
     # action[t] is the transition obs[t] -> obs[t+1]. The final frame has no
-    # valid next observation and is therefore excluded as an action.
+    # valid next observation. Some datasets nevertheless store an action at
+    # that frame, while others already store exactly T-1 transition actions.
     transition_length = observation_length - 1
+    if actions.shape[0] not in {transition_length, observation_length}:
+        raise ValueError(
+            "ALOHA action length must be T-1 or T for T observations, got "
+            f"actions={actions.shape[0]}, observations={observation_length}."
+        )
     actions = actions[:transition_length]
     rewards = _normalize_rewards(raw_rewards, length=transition_length)
     raw_human = _trim_frame_aligned_human_data(raw_human, transition_length)
@@ -457,8 +484,20 @@ def load_hdf5_episode(path: str) -> EpisodeArrays:
     )
 
 
+def _configured_path(value: str, *, env_var: str) -> Path:
+    """Resolve a required path supplied through an environment variable."""
+    if not value.strip():
+        raise ValueError(
+            f"{env_var} is required. Set it to an explicit local path; "
+            "the converter intentionally has no machine-specific default."
+        )
+    return Path(value).expanduser()
+
+
 def _stage1_full_weights_path() -> Path:
-    checkpoint_dir = Path(STAGE1_MODEL_PATH)
+    checkpoint_dir = _configured_path(
+        STAGE1_MODEL_PATH, env_var="ALOHA_STAGE1_CHECKPOINT"
+    )
     candidates = (
         checkpoint_dir / "model_state_dict" / "full_weights.pt",
         checkpoint_dir / "actor" / "model_state_dict" / "full_weights.pt",
@@ -473,7 +512,11 @@ def _stage1_full_weights_path() -> Path:
 
 
 def _stage1_norm_stats_path() -> Path:
-    path = Path(STAGE1_MODEL_PATH) / RLT_REPO_ID / "norm_stats.json"
+    path = (
+        _configured_path(STAGE1_MODEL_PATH, env_var="ALOHA_STAGE1_CHECKPOINT")
+        / RLT_REPO_ID
+        / "norm_stats.json"
+    )
     if not path.is_file():
         raise FileNotFoundError(
             f"Stage 1 norm stats do not exist at required path: {path}"
@@ -554,15 +597,13 @@ def make_env_obs(episode: EpisodeArrays, indices: np.ndarray) -> dict[str, Any]:
     batch_size = int(indices.shape[0])
     left_wrist = _image_tensor_for_indices(episode.wrist_images, indices)
     right_wrist = _image_tensor_for_indices(episode.extra_view_images, indices)
-    wrist_images = None
-    if left_wrist is not None and right_wrist is not None:
-        # AlohaInputs expects one wrist tensor per sample with shape [2,H,W,C]:
-        # index 0 is left wrist, index 1 is right wrist.
-        wrist_images = torch.stack([left_wrist, right_wrist], dim=1)
-    elif left_wrist is not None:
-        wrist_images = left_wrist[:, None]
-    elif right_wrist is not None:
-        wrist_images = right_wrist[:, None]
+    if left_wrist is None or right_wrist is None:
+        raise ValueError(
+            "ALOHA Stage-1 feature extraction requires both wrist cameras."
+        )
+    # AlohaInputs expects one wrist tensor per sample with shape [2,H,W,C]:
+    # index 0 is left wrist, index 1 is right wrist.
+    wrist_images = torch.stack([left_wrist, right_wrist], dim=1)
 
     return {
         "main_images": _image_tensor_for_indices(episode.main_images, indices),
@@ -772,12 +813,15 @@ def _episode_number(path: str) -> int:
 
 
 def _select_hdf5_paths() -> tuple[list[str], int]:
+    hdf5_dir = _configured_path(HDF5_DIR, env_var="ALOHA_HDF5_DIR")
+    if not hdf5_dir.is_dir():
+        raise FileNotFoundError(f"ALOHA HDF5 directory does not exist: {hdf5_dir}")
     all_paths = sorted(
-        glob.glob(os.path.join(HDF5_DIR, "episode_*.hdf5")),
+        glob.glob(str(hdf5_dir / "episode_*.hdf5")),
         key=_episode_number,
     )
     if not all_paths:
-        raise FileNotFoundError(f"No episode_*.hdf5 files found under {HDF5_DIR}")
+        raise FileNotFoundError(f"No episode_*.hdf5 files found under {hdf5_dir}")
 
     selected = all_paths
     if EPISODE_IDS:
@@ -785,7 +829,7 @@ def _select_hdf5_paths() -> tuple[list[str], int]:
         missing = sorted(set(EPISODE_IDS) - set(by_id))
         if missing:
             raise FileNotFoundError(
-                f"Requested EPISODE_IDS are missing under {HDF5_DIR}: {missing}"
+                f"Requested EPISODE_IDS are missing under {hdf5_dir}: {missing}"
             )
         selected = [by_id[episode_id] for episode_id in EPISODE_IDS]
     if MAX_EPISODES > 0:
@@ -804,7 +848,11 @@ def _write_conversion_manifest(
     manifest = {
         "version": 1,
         "stage1": {
-            "model_path": str(Path(STAGE1_MODEL_PATH).resolve()),
+            "model_path": str(
+                _configured_path(
+                    STAGE1_MODEL_PATH, env_var="ALOHA_STAGE1_CHECKPOINT"
+                ).resolve()
+            ),
             "full_weights_path": str(_stage1_full_weights_path().resolve()),
             "full_weights_sha256": full_weights_sha256,
             "norm_stats_path": str(_stage1_norm_stats_path().resolve()),
@@ -812,7 +860,9 @@ def _write_conversion_manifest(
             "repo_id": RLT_REPO_ID,
         },
         "source": {
-            "hdf5_dir": str(Path(HDF5_DIR).resolve()),
+            "hdf5_dir": str(
+                _configured_path(HDF5_DIR, env_var="ALOHA_HDF5_DIR").resolve()
+            ),
             "episodes": [
                 {
                     "path": str(Path(path).resolve()),
@@ -841,7 +891,9 @@ def _write_conversion_manifest(
 
 
 def convert_directory() -> None:
-    output_path = Path(OUTPUT_BUFFER_DIR)
+    output_path = _configured_path(
+        OUTPUT_BUFFER_DIR, env_var="ALOHA_REPLAY_BUFFER_PATH"
+    )
     if output_path.exists():
         raise FileExistsError(
             f"Refusing to overwrite existing replay-buffer path: {output_path}"
@@ -890,6 +942,10 @@ def convert_directory() -> None:
         full_weights_sha256=full_weights_sha256,
         norm_stats_sha256=norm_stats_sha256,
         replay_stats=replay_stats,
+    )
+    validate_replay_checkpoint(
+        output_path,
+        min_sample_count=1,
     )
     replay_buffer.close()
     print(f"Saved RLinf replay buffer to {output_path}")

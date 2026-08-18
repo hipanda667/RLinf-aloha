@@ -23,10 +23,18 @@ from torch.distributed.fsdp.sharded_grad_scaler import ShardedGradScaler
 from torch.distributed.tensor import DTensor
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
-from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForVision2Seq
+from transformers import AutoConfig, AutoModelForCausalLM
+
+# AutoModelForVision2Seq was renamed to AutoModelForImageTextToText in transformers >= 5.0
+try:
+    from transformers import AutoModelForVision2Seq
+except ImportError:
+    try:
+        from transformers import AutoModelForImageTextToText as AutoModelForVision2Seq
+    except ImportError:
+        AutoModelForVision2Seq = None
 
 from rlinf.config import SupportedModel, torch_dtype_from_precision
-from rlinf.data.tokenizers import hf_tokenizer
 from rlinf.hybrid_engines.fsdp import (
     FSDP,
     FSDPModule,
@@ -36,6 +44,7 @@ from rlinf.hybrid_engines.fsdp.utils import (
     create_device_mesh,
     get_lr_scheduler,
 )
+from rlinf.models.tokenization.hf import hf_tokenizer
 from rlinf.scheduler import Worker
 from rlinf.utils.logging import get_logger
 from rlinf.utils.utils import (
@@ -173,7 +182,10 @@ class FSDPModelManager:
                 load_in_8bit=True,
             )
         else:
-            if type(model_config) in AutoModelForVision2Seq._model_mapping.keys():
+            if (
+                AutoModelForVision2Seq is not None
+                and type(model_config) in AutoModelForVision2Seq._model_mapping.keys()
+            ):
                 auto_model_class = AutoModelForVision2Seq
             else:
                 auto_model_class = AutoModelForCausalLM
@@ -441,13 +453,17 @@ class FSDPModelManager:
             if self.optimizer_steps >= self.critic_warmup_steps:
                 self.optimizer = self.build_optimizer(model=self.model)
                 self.critic_warmup_steps = 0
+                self.lr_scheduler = self.build_lr_scheduler(
+                    optimizer=self.optimizer,
+                    optim_config=self._cfg.optim,
+                )
         else:
             lr_list = [group["lr"] for group in self.optimizer.param_groups]
 
         return grad_norm, lr_list
 
     def build_lr_scheduler(
-        self, optimizer: Optimizer, optim_config: DictConfig
+        self, optimizer: Optimizer, optim_config: DictConfig, last_epoch: int = -1
     ) -> LRScheduler:
         """
         Build the learning rate scheduler based on the configuration.
@@ -456,6 +472,7 @@ class FSDPModelManager:
         Args:
             optimizer (Optimizer): The optimizer for which to schedule the learning rate.
             optim_config (DictConfig): The optimizer config.
+            last_epoch (int): The scheduler epoch to resume from.
 
         Returns:
             LRScheduler: The learning rate scheduler.
@@ -478,6 +495,7 @@ class FSDPModelManager:
             num_cycles=num_cycles,
             min_lr=min_lr,
             min_lr_rate=min_lr_rate,
+            last_epoch=last_epoch,
         )
 
     def build_optimizer(

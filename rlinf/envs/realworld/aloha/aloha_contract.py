@@ -85,7 +85,7 @@ def make_raw_observation(
     qpos: np.ndarray,
     frames: Mapping[str, np.ndarray],
 ) -> dict[str, dict[str, np.ndarray]]:
-    """Build the raw Gym observation consumed by ``RealWorldEnv._wrap_obs``.
+    """Build the raw Gym observation consumed by RealWorldEnv.
 
     Camera identity is explicit. No resize, crop, channel transpose, batching,
     normalization, or tensor conversion is performed here.
@@ -96,8 +96,7 @@ def make_raw_observation(
         raise KeyError(f"Missing required ALOHA cameras: {missing}.")
 
     validated_frames = {
-        name: require_rgb_frame(frames[name], camera_name=name)
-        for name in CAMERA_NAMES
+        name: require_rgb_frame(frames[name], camera_name=name) for name in CAMERA_NAMES
     }
     frame_shapes = {frame.shape for frame in validated_frames.values()}
     if len(frame_shapes) != 1:

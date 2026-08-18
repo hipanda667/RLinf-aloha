@@ -37,7 +37,7 @@ if TYPE_CHECKING:
     from rlinf.workers.actor.async_fsdp_sac_policy_worker import (
         AsyncEmbodiedSACFSDPPolicy,
     )
-    from rlinf.workers.actor.fsdp_actor_worker import EmbodiedFSDPActor
+    from rlinf.workers.actor.embodied_fsdp_actor_worker import EmbodiedFSDPActor
     from rlinf.workers.actor.fsdp_nft_policy_worker import EmbodiedNFTFSDPPolicy
     from rlinf.workers.actor.fsdp_sac_policy_worker import EmbodiedSACFSDPPolicy
     from rlinf.workers.env.async_env_worker import AsyncEnvWorker
@@ -483,8 +483,8 @@ class EmbodiedRunner:
         start_time = time.time()
         for _step in range(start_step, self.max_steps):
             # set global step
-            self.actor.set_global_step(self.global_step)
-            self.rollout.set_global_step(self.global_step)
+            self.actor.set_global_step(self.global_step).wait()
+            self.rollout.set_global_step(self.global_step).wait()
 
             profiled_step = (
                 self.global_step
@@ -494,7 +494,7 @@ class EmbodiedRunner:
             if profiled_step is not None:
                 self._open_profiling_window(profiled_step)
 
-            with self.timer("step"):
+            with self.timer("step", trace_args={"step_idx": _step}):
                 with self.timer("sync_weights"):
                     if _step % self.weight_sync_interval == 0:
                         self.update_rollout_weights()
@@ -529,16 +529,17 @@ class EmbodiedRunner:
                     )
 
                 # actor training.
-                actor_training_handle: Handle = self.actor.run_training()
-                env_bootstrap_handle: Handle | None = None
-                if self.overlap_env_bootstrap and _step + 1 < self.max_steps:
-                    env_bootstrap_handle = self.env.prefetch_train_bootstrap(
-                        rollout_channel=self.rollout_channel
-                    )
+                with self.timer("actor_training"):
+                    actor_training_handle: Handle = self.actor.run_training()
+                    env_bootstrap_handle: Handle | None = None
+                    if self.overlap_env_bootstrap and _step + 1 < self.max_steps:
+                        env_bootstrap_handle = self.env.prefetch_train_bootstrap(
+                            rollout_channel=self.rollout_channel
+                        )
 
-                actor_training_metrics = actor_training_handle.wait()
-                if env_bootstrap_handle is not None:
-                    env_bootstrap_handle.wait()
+                    actor_training_metrics = actor_training_handle.wait()
+                    if env_bootstrap_handle is not None:
+                        env_bootstrap_handle.wait()
 
                 self.global_step += 1
                 eval_metrics = self._maybe_eval_and_checkpoint(_step)
@@ -566,8 +567,8 @@ class EmbodiedRunner:
         start_time = time.time()
         for _step in range(start_step, self.max_steps):
             # set global step
-            self.actor.set_global_step(self.global_step)
-            self.rollout.set_global_step(self.global_step)
+            self.actor.set_global_step(self.global_step).wait()
+            self.rollout.set_global_step(self.global_step).wait()
 
             profiled_step = (
                 self.global_step
@@ -577,7 +578,7 @@ class EmbodiedRunner:
             if profiled_step is not None:
                 self._open_profiling_window(profiled_step)
 
-            with self.timer("step"):
+            with self.timer("step", trace_args={"step_idx": _step}):
                 with self.timer("sync_weights"):
                     if _step % self.weight_sync_interval == 0:
                         self.update_rollout_weights()

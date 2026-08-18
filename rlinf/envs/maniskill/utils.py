@@ -12,11 +12,38 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import ctypes
-import gc
-import sys
 
 import torch
+
+
+def allow_pci_render_backend() -> None:
+    """Let ManiSkill accept a full ``pci:<domain>:<bus>:<slot>.<func>`` render backend.
+
+    ManiSkill documents ``pci:...`` as the way to pick a renderer on machines
+    without CUDA, but ``parse_backend_device_id`` splits the string on every
+    colon and unpacks exactly two values, so a real PCI address raises
+    ``ValueError`` before SAPIEN sees it. Keep such a backend intact and let
+    SAPIEN resolve it; everything else keeps ManiSkill's own parsing.
+
+    Idempotent, and a no-op for a ManiSkill that is absent or parses backend
+    strings some other way.
+    """
+    try:
+        from mani_skill.envs.utils.system import backend
+    except ImportError:
+        return
+
+    original_parse = getattr(backend, "parse_backend_device_id", None)
+    if original_parse is None or getattr(original_parse, "_rlinf_pci_patched", False):
+        return
+
+    def parse_backend_device_id(device_backend):
+        if isinstance(device_backend, str) and device_backend.startswith("pci:"):
+            return device_backend, None
+        return original_parse(device_backend)
+
+    parse_backend_device_id._rlinf_pci_patched = True
+    backend.parse_backend_device_id = parse_backend_device_id
 
 
 def recursive_to_own(obj):
@@ -30,27 +57,6 @@ def recursive_to_own(obj):
         return {k: recursive_to_own(v) for k, v in obj.items()}
     else:
         return obj
-
-
-def force_gc_tensor(tensor):
-    if not torch.is_tensor(tensor):
-        return
-
-    try:
-        ref_count = sys.getrefcount(tensor)
-        for _ in range(ref_count + 10):
-            ctypes.pythonapi.Py_DecRef(ctypes.py_object(tensor))
-
-    except Exception as e:
-        print(f"Error during force delete: {e}")
-
-
-def cleanup_cuda_tensors():
-    for obj in gc.get_objects():
-        if torch.is_tensor(obj) and obj.is_cuda:
-            force_gc_tensor(obj)
-    gc.collect()
-    torch.cuda.empty_cache()
 
 
 def get_batch_rng_state(batched_rng):

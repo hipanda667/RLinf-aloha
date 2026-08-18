@@ -11,8 +11,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import dataclasses
+import filecmp
 import os
+import shutil
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -20,10 +22,61 @@ from omegaconf import DictConfig
 from torchdata.stateful_dataloader import StatefulDataLoader
 
 from rlinf.config import SupportedModel
-from rlinf.data.lerobot_paths import resolve_lerobot_repo_id
 from rlinf.models.embodiment.base_policy import ForwardType
 from rlinf.utils.utils import get_rng_state, set_rng_state
 from rlinf.workers.sft.fsdp_sft_worker import FSDPSftWorker
+
+
+def _copy_openpi_norm_stats(cfg: DictConfig, save_path: str) -> Path | None:
+    """Copy configured OpenPI normalization statistics into a checkpoint.
+
+    The policy server intentionally loads statistics only from
+    ``<checkpoint>/<repo_id>/norm_stats.json``. Keeping the exact training file
+    beside the weights makes the checkpoint self-contained without a serving-time
+    fallback.
+
+    Args:
+        cfg: Full SFT configuration.
+        save_path: Actor checkpoint directory.
+
+    Returns:
+        The copied file path, or ``None`` when no explicit statistics path is
+        configured.
+
+    Raises:
+        FileNotFoundError: If the configured statistics file does not exist.
+        ValueError: If ``repo_id`` can escape the checkpoint or an existing file
+            has different contents.
+    """
+    norm_stats_path = cfg.actor.model.get("openpi_data", {}).get("norm_stats_path")
+    if norm_stats_path is None:
+        return None
+
+    source = Path(str(norm_stats_path)).expanduser()
+    if source.is_dir():
+        source = source / "norm_stats.json"
+    if not source.is_file():
+        raise FileNotFoundError(f"OpenPI norm stats not found: {source}")
+
+    repo_id = str(cfg.actor.model.openpi_data.repo_id)
+    repo_path = Path(repo_id)
+    if repo_path.is_absolute() or not repo_path.parts or ".." in repo_path.parts:
+        raise ValueError(f"Unsafe OpenPI repo_id for checkpoint assets: {repo_id!r}")
+
+    checkpoint_dir = Path(save_path).resolve()
+    destination = (checkpoint_dir / repo_path / "norm_stats.json").resolve()
+    if checkpoint_dir not in destination.parents:
+        raise ValueError(f"Unsafe OpenPI repo_id for checkpoint assets: {repo_id!r}")
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists():
+        if not filecmp.cmp(source, destination, shallow=False):
+            raise ValueError(
+                f"Checkpoint already contains different norm stats: {destination}"
+            )
+    else:
+        shutil.copy2(source, destination)
+    return destination
 
 
 class FSDPVlaSftWorker(FSDPSftWorker):
@@ -31,45 +84,24 @@ class FSDPVlaSftWorker(FSDPSftWorker):
         super().__init__(cfg)
 
     def build_dataloader(self, data_paths: Any, eval_dataset: bool = False):
-        if SupportedModel(self.cfg.actor.model.model_type) in [SupportedModel.OPENPI]:
-            repo_id = resolve_lerobot_repo_id(data_paths)
-            if repo_id is None:
-                raise ValueError(
-                    "OpenPI SFT requires data.train_data_paths to be set to a local "
-                    "dataset path or LeRobot repo id."
-                )
-
-            import openpi.training.data_loader as openpi_data_loader
-
-            from rlinf.models.embodiment.openpi.dataconfig import get_openpi_config
-
-            config = get_openpi_config(
-                self.cfg.actor.model.openpi.config_name,
-                model_path=self.cfg.actor.model.model_path,
-                batch_size=self.cfg.actor.micro_batch_size * self._world_size,
-                repo_id=repo_id,
-                data_kwargs=getattr(self.cfg.actor, "openpi_data", None),
+        model_type = SupportedModel(self.cfg.actor.model.model_type)
+        if model_type == SupportedModel.OPENPI_RLINF:
+            from rlinf.data.datasets.openpi_rlinf import (
+                build_openpi_rlinf_sft_dataloader,
             )
-            # The OpenPI model overrides are also the source of truth for the
-            # action horizon used by the LeRobot data loader.  Without this
-            # bridge, pi05_aloha_robotwin keeps its default horizon of 50 even
-            # when the RLT experiment explicitly requests 16.
-            openpi_overrides = self.cfg.actor.model.openpi
-            if openpi_overrides.get("action_horizon") is not None:
-                config = dataclasses.replace(
-                    config,
-                    model=dataclasses.replace(
-                        config.model,
-                        action_horizon=int(openpi_overrides.action_horizon),
-                    ),
-                )
-            data_loader = openpi_data_loader.create_data_loader(
-                config, framework="pytorch", shuffle=True
+
+            return build_openpi_rlinf_sft_dataloader(
+                self.cfg, self._world_size, self._rank, data_paths, eval_dataset
             )
-            return data_loader, data_loader.data_config()
-        elif SupportedModel(self.cfg.actor.model.model_type) in [
-            SupportedModel.LINGBOTVLA
-        ]:
+        elif model_type == SupportedModel.OPENPI:
+            from rlinf.data.datasets.openpi_rlinf import (
+                build_official_openpi_sft_dataloader,
+            )
+
+            return build_official_openpi_sft_dataloader(
+                self.cfg, self._world_size, self._rank, data_paths, eval_dataset
+            )
+        elif model_type == SupportedModel.LINGBOTVLA:
             from rlinf.models.embodiment.lingbotvla.sft_builder import (
                 build_lingbot_sft_dataloader,
             )
@@ -77,15 +109,21 @@ class FSDPVlaSftWorker(FSDPSftWorker):
             return build_lingbot_sft_dataloader(
                 self.cfg, self._world_size, self._rank, data_paths
             )
-        elif SupportedModel(self.cfg.actor.model.model_type) in [
-            SupportedModel.DREAMZERO
-        ]:
+        elif model_type == SupportedModel.DREAMZERO:
             from rlinf.data.datasets.dreamzero import (
                 build_dreamzero_sft_dataloader,
             )
 
             return build_dreamzero_sft_dataloader(
                 self.cfg, self._world_size, self._rank, data_paths, eval_dataset
+            )
+        elif model_type == SupportedModel.EVO1:
+            from rlinf.models.embodiment.evo1.sft_builder import (
+                build_evo1_sft_dataloader,
+            )
+
+            return build_evo1_sft_dataloader(
+                self.cfg, self._world_size, self._rank, data_paths
             )
         else:
             raise KeyError(
@@ -119,6 +157,20 @@ class FSDPVlaSftWorker(FSDPSftWorker):
 
     def save_checkpoint(self, save_path: str, step: int = 0) -> None:
         super().save_checkpoint(save_path, step)
+
+        asset_error = [None]
+        if self._rank == 0:
+            try:
+                _copy_openpi_norm_stats(self.cfg, save_path)
+            except (FileNotFoundError, ValueError, OSError) as exc:
+                asset_error[0] = f"{type(exc).__name__}: {exc}"
+
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            torch.distributed.broadcast_object_list(asset_error, src=0)
+        if asset_error[0] is not None:
+            raise RuntimeError(
+                f"Failed to preserve OpenPI checkpoint assets: {asset_error[0]}"
+            )
 
         if isinstance(self.data_loader, StatefulDataLoader):
             state = self.data_loader.state_dict()
@@ -160,26 +212,25 @@ class FSDPVlaSftWorker(FSDPSftWorker):
     def get_max_steps_per_epoch(self):
         if self.data_loader is None:
             return 0
-        if SupportedModel(self.cfg.actor.model.model_type) == SupportedModel.OPENPI:
-            num_batches = len(self._openpi_pytorch_dataloader(self.data_loader))
-            return max(1, num_batches // self.gradient_accumulation)
-        return super().get_max_steps_per_epoch()
+        model_type = SupportedModel(self.cfg.actor.model.model_type)
+        if model_type in (SupportedModel.OPENPI_RLINF, SupportedModel.OPENPI):
+            if model_type == SupportedModel.OPENPI_RLINF:
+                from rlinf.data.datasets.openpi_rlinf import (
+                    get_official_openpi_sft_num_batches,
+                    is_official_openpi_sft_dataloader,
+                )
 
-    @staticmethod
-    def _openpi_pytorch_dataloader(openpi_dataloader: Any):
-        """Unwrap OpenPI `DataLoaderImpl` to the inner PyTorch DataLoader.
+                num_batches = (
+                    get_official_openpi_sft_num_batches(self.data_loader)
+                    if is_official_openpi_sft_dataloader(self.data_loader)
+                    else len(self.data_loader)
+                )
+            else:
+                from rlinf.data.datasets.openpi_rlinf import (
+                    get_official_openpi_sft_num_batches,
+                )
 
-        OpenPI torch path:
-          DataLoaderImpl._data_loader -> TorchDataLoader
-          TorchDataLoader._data_loader / .torch_loader -> torch.utils.data.DataLoader
-
-        """
-        torch_data_loader = getattr(openpi_dataloader, "_data_loader", None)
-        pytorch_dl = getattr(torch_data_loader, "_data_loader", None) or getattr(
-            torch_data_loader, "torch_loader", None
-        )
-        if pytorch_dl is None:
-            raise TypeError(
-                "OpenPI dataloader does not expose an inner torch DataLoader; cannot infer steps per epoch from len()."
-            )
-        return pytorch_dl
+                num_batches = get_official_openpi_sft_num_batches(self.data_loader)
+        else:
+            return super().get_max_steps_per_epoch()
+        return max(1, num_batches // self.gradient_accumulation)

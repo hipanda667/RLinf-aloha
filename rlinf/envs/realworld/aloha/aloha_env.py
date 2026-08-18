@@ -103,6 +103,7 @@ class AlohaEnv(gym.Env):
 
     @property
     def task_description(self) -> str:
+        """Return the language instruction paired with observations."""
         return TASK_DESCRIPTION
 
     def reset(
@@ -111,15 +112,16 @@ class AlohaEnv(gym.Env):
         seed: int | None = None,
         options: dict | None = None,
     ) -> tuple[dict, dict]:
+        """Reset episode bookkeeping without commanding robot motion."""
         super().reset(seed=seed)
         del options
-        # Reset is observation-only. It deliberately has no home-motion side effect.
         self._num_steps = 0
         self._terminal_reason = TerminalReason.NONE
         self.control_mode = ControlMode.MODEL
         return self._get_observation(), {}
 
     def step(self, action: np.ndarray) -> tuple[dict, float, bool, bool, dict]:
+        """Select and optionally execute one validated absolute ALOHA action."""
         policy_action = require_aloha_vector(action, name="action")
         human_action = (
             self.hardware.read_human_action()
@@ -167,9 +169,11 @@ class AlohaEnv(gym.Env):
         self._terminal_reason = TerminalReason(reason)
 
     def set_control_mode(self, mode: ControlMode) -> None:
+        """Set whether policy or human input may supply the next action."""
         self.control_mode = ControlMode(mode)
 
     def close(self) -> None:
+        """Release resources owned by the injected hardware backend."""
         self.hardware.close()
 
     def _get_observation(self) -> dict:

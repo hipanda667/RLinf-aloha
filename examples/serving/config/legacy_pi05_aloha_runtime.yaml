@@ -1,0 +1,45 @@
+# Immutable compatibility record for the old ALOHA Pi0.5 RLT checkpoint.
+# This is documentation, not a config accepted by the new policy server.
+schema_version: 1
+source:
+  branch: legacy/main-3eeb9265
+  commit: 3eeb9265e4574ef0c046ecf0cfee892e8cc6e9aa
+
+dependency_snapshot:
+  requirements: requirements/legacy/aloha_pi05_legacy_runtime.txt
+  captured_at: "2026-08-17"
+  python: "3.11.14"
+  torch: "2.11.0+cu128"
+  cuda_runtime: "12.8"
+  openpi_distribution: "rlinf-openpi==0.1.1"
+  immutable_sources:
+    pyproject_toml: 7ea8fcfb6d35db754028bd39644333777ac372ab
+    install_sh: ee804988d2065ec49b84e149064878093ee34a68
+    openpi_requirements: 5eb5456f3fe32ebf67cb766c87fcb2ac704b40f8
+
+checkpoint_contract:
+  format: legacy
+  model_type: openpi
+  repo_id: pi05_sandwich_merged_all_0805
+  config_name: pi05_aloha_robotwin
+  default_prompt: make a sandwich
+  action_horizon: 16
+  action_dim: 14
+  num_images_in_input: 3
+  training_config:
+    path: examples/sft/config/rlt_stage1_sft_openpi_pi05_sandwich_merged_all_0805_16chunk_50k.yaml
+    git_blob: 0806c65584341a09edc928a644e0006310ba350e
+  serving_config:
+    path: examples/serving/config/serve_pi05_aloha_sandwich.yaml
+    git_blob: b14dc64867758357c7779b35624f5067b245fa46
+  serving_script:
+    path: examples/serving/scripts/serve_pi05_aloha.py
+    git_blob: 7bb33ab9124acaa654ee545be10bd3a362d4e210
+  serving_launcher:
+    path: examples/serving/scripts/run_serve_pi05_aloha.sh
+    git_blob: 883e0e4a053e4ecaeb0a0ebff644fd94292a07d5
+
+isolation:
+  new_runtime_accepts_legacy: false
+  reuse_integration_environment: false
+  overwrite_legacy_checkpoint: false

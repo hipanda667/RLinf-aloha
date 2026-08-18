@@ -35,24 +35,45 @@ EOF
 setup_mirror() {
 	if [ "$USE_MIRRORS" -eq 1 ]; then
 		export HF_ENDPOINT=${HF_ENDPOINT:-https://hf-mirror.com}
-		export GITHUB_PREFIX=${GITHUB_PREFIX:-https://ghfast.top/}
+		export GITHUB_PREFIX=${GITHUB_PREFIX:-https://gh-proxy.com/}
 	fi
+}
+
+# Ride out transient network / HF Hub errors (e.g. HTTP 429 rate limits during
+# parallel Docker builds) with exponential backoff.
+retry_cmd() {
+	local max=5 delay=15 attempt=1
+	until "$@"; do
+		if [ "$attempt" -ge "$max" ]; then
+			echo "[download_assets] '$*' failed after ${max} attempts" >&2
+			return 1
+		fi
+		local wait=$((delay + RANDOM % 10))
+		echo "[download_assets] '$*' failed (attempt ${attempt}/${max}); retrying in ${wait}s" >&2
+		sleep "$wait"
+		attempt=$((attempt + 1))
+		delay=$((delay * 2))
+	done
 }
 
 download_maniskill_assets() {
 	local root_dir=$1
+	local ms_import_err
 
 	# ManiSkill assets
 	export MS_ASSET_DIR="${root_dir}/.maniskill"
 	if [ -d "$MS_ASSET_DIR" ]; then
 		echo "[download_assets] ManiSkill assets already exist at $MS_ASSET_DIR, skipping download."
+	elif ! ms_import_err=$(python -c "import mani_skill" 2>&1); then
+		# The download goes through mani_skill, and so through torch, which needs
+		# driver libraries the container runtime only injects at run time. Skip
+		# rather than fail so image builds still succeed. MS_ASSET_DIR is left
+		# uncreated so a later run does not mistake it for a finished download.
+		echo "[download_assets] mani_skill is not importable; skipping the ManiSkill assets." >&2
+		echo "[download_assets] Re-run 'download_assets --assets maniskill' once it is." >&2
+		echo "$ms_import_err" >&2
 	else
 		mkdir -p "$MS_ASSET_DIR"
-        # Ensure mani_skill is installed
-        if ! python -c "import mani_skill" &> /dev/null; then
-            echo "mani_skill is not installed. Please install it first." >&2
-            exit 1
-        fi
 		if [ "$USE_MIRRORS" -eq 1 ]; then
 			# mani_skill.utils.download_asset hardcodes huggingface.co / github.com
 			# URLs in DATA_SOURCES and fetches them with urllib, which ignores
@@ -78,8 +99,8 @@ main(parse_args([sys.argv[1], "-y"]))
 PYEOF
 			done
 		else
-			python -m mani_skill.utils.download_asset bridge_v2_real2sim -y
-			python -m mani_skill.utils.download_asset widowx250s -y
+			retry_cmd python -m mani_skill.utils.download_asset bridge_v2_real2sim -y
+			retry_cmd python -m mani_skill.utils.download_asset widowx250s -y
 		fi
 	fi
 
@@ -90,7 +111,7 @@ PYEOF
 		echo "[download_assets] SAPIEN PhysX assets already exist at $PHYSX_DIR, skipping download."
 	else
 		mkdir -p "$PHYSX_DIR"
-		wget -O "$PHYSX_DIR/linux-so.zip" "${GITHUB_PREFIX}https://github.com/sapien-sim/physx-precompiled/releases/download/${PHYSX_VERSION}/linux-so.zip"
+		retry_cmd wget -O "$PHYSX_DIR/linux-so.zip" "${GITHUB_PREFIX}https://github.com/sapien-sim/physx-precompiled/releases/download/${PHYSX_VERSION}/linux-so.zip"
 		unzip "$PHYSX_DIR/linux-so.zip" -d "$PHYSX_DIR" && rm "$PHYSX_DIR/linux-so.zip"
 	fi
 }
@@ -104,7 +125,7 @@ download_openpi_assets() {
 		echo "[download_assets] OpenPI tokenizer already exists at $TOKENIZER_DIR, skipping download."
 	else
 		mkdir -p "$TOKENIZER_DIR"
-		hf download RLinf/openpi_tokenizer --local-dir "$TOKENIZER_DIR"
+		retry_cmd hf download RLinf/openpi_tokenizer --local-dir "$TOKENIZER_DIR"
 	fi
 }
 

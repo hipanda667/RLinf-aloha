@@ -21,6 +21,8 @@ from dataclasses import dataclass
 
 
 class TerminalReason(str, enum.Enum):
+    """Explicit reason for ending an ALOHA sandwich episode."""
+
     NONE = "none"
     SUCCESS = "success"
     FAILURE = "failure"
@@ -31,6 +33,8 @@ class TerminalReason(str, enum.Enum):
 
 @dataclass(frozen=True)
 class SandwichStepOutcome:
+    """Gym-compatible result derived from an explicit terminal reason."""
+
     reward: float
     terminated: bool
     truncated: bool

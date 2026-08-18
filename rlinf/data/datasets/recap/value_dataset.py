@@ -26,13 +26,21 @@ import numpy as np
 import openpi.models.model as _openpi_model
 import openpi.transforms as _openpi_transforms
 import torch
-from lerobot.common.datasets.lerobot_dataset import (
-    LeRobotDataset,
-    LeRobotDatasetMetadata,
-)
+
+try:  # lerobot >= 0.2 layout
+    from lerobot.datasets.lerobot_dataset import (
+        LeRobotDataset,
+        LeRobotDatasetMetadata,
+    )
+except ModuleNotFoundError:  # lerobot < 0.2
+    from lerobot.common.datasets.lerobot_dataset import (
+        LeRobotDataset,
+        LeRobotDatasetMetadata,
+    )
 from openpi.transforms import DataTransformFn
 from torch.utils.data import Dataset
 
+from rlinf.data.storage.lerobot import episode_boundaries
 from rlinf.models.embodiment.openpi.policies import franka_policy, libero_policy
 
 from .common import BaseDataLoaderImpl, ReCapMixtureDataset
@@ -270,11 +278,9 @@ class ValueDataset(Dataset):
                 selected = set(rng.choice(all_eps, size=num, replace=False).tolist())
             else:
                 selected = set(all_eps[:num])
-            idx = self._base.episode_data_index
+            ep_starts, ep_ends = episode_boundaries(self._base)
             self._indices = [
-                i
-                for ep in sorted(selected)
-                for i in range(idx["from"][ep].item(), idx["to"][ep].item())
+                i for ep in sorted(selected) for i in range(ep_starts[ep], ep_ends[ep])
             ]
 
         self._transform = self._build_transform(

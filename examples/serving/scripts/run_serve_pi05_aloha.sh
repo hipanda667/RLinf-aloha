@@ -20,7 +20,7 @@
 #       --config examples/serving/config/serve_pi05_aloha_sandwich.yaml
 #
 # Optional env overrides:
-#   SERVING_PYTHON_BIN   absolute interpreter (default: yushun-openpi conda python3.11)
+#   SERVING_PYTHON_BIN   Python executable with the OpenPI serving dependencies
 #   SERVING_REPO_PATH    repository root (default: two levels above this script)
 
 set -euo pipefail
@@ -28,15 +28,14 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export REPO_PATH="${SERVING_REPO_PATH:-$(dirname "$(dirname "$(dirname "$SCRIPT_DIR")")")}"
 
-PYTHON_BIN="${SERVING_PYTHON_BIN:-/inspire/hdd/global_user/czxs253130583/yushun-home/miniforge3/envs/yushun-openpi/bin/python3.11}"
+PYTHON_BIN="${SERVING_PYTHON_BIN:-python}"
 
-if [ ! -x "${PYTHON_BIN}" ]; then
+if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
   echo "ERROR: interpreter not found: ${PYTHON_BIN}" >&2
   exit 1
 fi
 
-# The deployment dependency set lives in ${REPO_PATH}/.venv (3.11-compiled site-packages).
-# Explicit PYTHONPATH keeps this independent of any activated conda env / PYTHONHOME.
-export PYTHONPATH="${REPO_PATH}:${REPO_PATH}/.venv/lib/python3.11/site-packages:${PYTHONPATH:-}"
+# Keep repository imports independent of the caller's working directory.
+export PYTHONPATH="${REPO_PATH}:${PYTHONPATH:-}"
 
 exec "${PYTHON_BIN}" "${REPO_PATH}/examples/serving/scripts/serve_pi05_aloha.py" "$@"

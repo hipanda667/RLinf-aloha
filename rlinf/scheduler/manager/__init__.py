@@ -15,7 +15,9 @@
 from .coll_manager import CollectiveGroupInfo, CollectiveManager
 from .lock_manager import DeviceLockManager, PortLockManager
 from .manager import Manager
+from .net_emulation import NetEmulationConfig, NetEmulationManager
 from .node_manager import NodeInfo, NodeManager
+from .tracer import Tracer
 from .worker_manager import WorkerAddress, WorkerInfo, WorkerManager
 
 __all__ = [
@@ -24,8 +26,11 @@ __all__ = [
     "CollectiveGroupInfo",
     "DeviceLockManager",
     "PortLockManager",
+    "NetEmulationManager",
+    "NetEmulationConfig",
     "NodeManager",
     "NodeInfo",
+    "Tracer",
     "WorkerAddress",
     "WorkerManager",
     "WorkerInfo",

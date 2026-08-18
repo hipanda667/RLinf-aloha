@@ -12,6 +12,7 @@ build
 docs/build
 dist
 logs/*
+logs_baseline/*
 outputs/*
 *.so
 .venv
@@ -21,20 +22,3 @@ rlinf/envs/maniskill/assets
 PKG-INFO
 *.egg-info/
 .claude/settings.json
-# Local RL Token artifacts
-.sii/
-checkpoints/
-results/
-
-# Data / model artifacts (never committed; distributed via shared storage with SHA256)
-*.pt
-*.pth
-*.safetensors
-*.h5
-*.hdf5
-*.parquet
-*.mp4
-norm_stats.json
-
-# Local logs
-log/

@@ -22,8 +22,6 @@ from rlinf.config import validate_cfg
 from rlinf.runners.offline_runner import OfflineRunner
 from rlinf.scheduler import Cluster
 from rlinf.utils.placement import HybridComponentPlacement
-from rlinf.workers.env.env_worker import EnvWorker
-from rlinf.workers.rollout.hf.huggingface_worker import MultiStepRolloutWorker
 
 
 @hydra.main(version_base="1.1", config_path="config", config_name="d4rl_iql_mujoco")
@@ -42,6 +40,21 @@ def main(cfg) -> None:
             with open_dict(cfg):
                 cfg.actor.model.obs_dim = int(obs_dim)
                 cfg.actor.model.action_dim = int(action_dim)
+    elif cfg.algorithm.loss_type == "rlt_ac":
+        if cfg.runner.only_eval or int(cfg.runner.val_check_interval) > 0:
+            raise ValueError(
+                "Pure offline RLT does not create environment or rollout workers. "
+                "Set runner.only_eval=false and runner.val_check_interval=-1."
+            )
+        if cfg.runner.get("ckpt_path"):
+            raise ValueError(
+                "runner.ckpt_path is not a Stage-2 resume mechanism. Use "
+                "runner.resume_dir pointing to a complete global_step_<N> "
+                "checkpoint; configure the Stage-1 model only during replay "
+                "conversion."
+            )
+        if not cfg.algorithm.replay_buffer.get("load_path"):
+            raise ValueError("Offline RLT requires algorithm.replay_buffer.load_path.")
     print(json.dumps(OmegaConf.to_container(cfg, resolve=True), indent=2))
 
     cluster = Cluster(cluster_cfg=cfg.cluster)
@@ -53,10 +66,26 @@ def main(cfg) -> None:
         from rlinf.workers.actor.fsdp_iql_policy_worker import EmbodiedIQLFSDPPolicy
 
         actor_worker_cls = EmbodiedIQLFSDPPolicy
+    elif cfg.algorithm.loss_type == "rlt_ac":
+        from rlinf.data.storage.replay import validate_replay_checkpoint
+        from rlinf.workers.actor.fsdp_offline_rlt_ac_policy_worker import (
+            OfflineRLTACFSDPPolicy,
+        )
+
+        actor_world_size = component_placement.get_world_size("actor")
+        replay_cfg = cfg.algorithm.replay_buffer
+        validate_replay_checkpoint(
+            replay_cfg.load_path,
+            min_sample_count=int(
+                replay_cfg.get("min_sample_count", cfg.actor.global_batch_size)
+            ),
+            world_size=actor_world_size,
+        )
+        actor_worker_cls = OfflineRLTACFSDPPolicy
     else:
         raise NotImplementedError(
             f"Unsupported offline algorithm.loss_type={cfg.algorithm.loss_type!r}. "
-            "Current train_offline_rl entry only supports 'offline_iql'."
+            "Current train_offline_rl supports 'offline_iql' and 'rlt_ac'."
         )
     actor_group = actor_worker_cls.create_group(cfg).launch(
         cluster, name=cfg.actor.group_name, placement_strategy=actor_placement
@@ -66,6 +95,11 @@ def main(cfg) -> None:
     env_group = None
     rollout_group = None
     if enable_eval:
+        from rlinf.workers.env.env_worker import EnvWorker
+        from rlinf.workers.rollout.hf.huggingface_worker import (
+            MultiStepRolloutWorker,
+        )
+
         # Create env worker group
         env_placement = component_placement.get_strategy("env")
         env_group = EnvWorker.create_group(cfg).launch(

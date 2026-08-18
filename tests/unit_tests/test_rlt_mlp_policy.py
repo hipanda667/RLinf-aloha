@@ -1,3 +1,17 @@
+# Copyright 2026 The RLinf Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import torch
 
 from rlinf.models.embodiment.mlp_policy.rlt_mlp_policy import RLTMLPPolicy
@@ -27,7 +41,7 @@ def _zero_obs(batch_size: int = 2) -> dict[str, torch.Tensor]:
     }
 
 
-def test_rlt_policy_action_squashing_is_configurable():
+def test_rlt_policy_action_squashing_is_configurable() -> None:
     obs = _zero_obs()
     with torch.no_grad():
         squashed, _, _ = _make_policy(True).sac_forward(obs, deterministic=True)
@@ -36,6 +50,7 @@ def test_rlt_policy_action_squashing_is_configurable():
     assert squashed.shape == (2, 224)
     assert unsquashed.shape == (2, 224)
     torch.testing.assert_close(
-        squashed, torch.full_like(squashed, torch.tanh(torch.tensor(2.0)))
+        squashed,
+        torch.full_like(squashed, torch.tanh(torch.tensor(2.0))),
     )
     torch.testing.assert_close(unsquashed, torch.full_like(unsquashed, 2.0))

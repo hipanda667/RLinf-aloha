@@ -1,9 +1,9 @@
 # Deployment contract: RLinf Stage-1 OpenPI Pi0.5 RLT SFT — ALOHA "make a sandwich".
 #
 # This file is the single source of truth for serving the Stage-1 SFT model.
-# The values below must match the training config
-# examples/sft/config/rlt_stage1_sft_openpi_pi05_sandwich_merged_all_0805_16chunk_50k.yaml
-# (action_horizon/action_chunk/num_action_chunks=16, use_rlt=True, rlt_alpha=1.0, ...).
+# The values below match
+# examples/sft/config/aloha_sandwich_rlt_stage1_sft_openpi_pi05.yaml.
+# Legacy checkpoints stay on the pinned legacy/main-3eeb9265 runtime.
 
 server:
   # Bind address / port for the openpi-client WebSocket policy server.
@@ -14,25 +14,34 @@ server:
   strict_load: true
 
 checkpoint:
-  # Must contain model_state_dict/full_weights.pt and <repo_id>/norm_stats.json.
-  dir: "/inspire/hdd/global_user/czxs253130583/fangchuan/work/RL/output/RLtoken/stage1/rlt_stage1_sft_pi05_sandwich_merged_all_0805_corrected_norm_16chunk_50k_bz16_h100_2gpu/rlt_stage1_sft_pi05_sandwich_merged_all_0805_corrected_norm_16chunk_50k_bz16_h100_2gpu/checkpoints/global_step_15000/actor"
+  # Accepted values are legacy and openpi_rlinf. This runtime refuses legacy.
+  format: "openpi_rlinf"
+  # Must contain full_weights.pt and the matching <repo_id>/norm_stats.json.
+  dir: ${oc.env:ALOHA_STAGE1_CHECKPOINT}
   # Must equal the training openpi_data.repo_id; selects <repo_id>/norm_stats.json.
-  repo_id: "pi05_sandwich_merged_all_0805"
+  repo_id: "aloha_sandwich"
   default_prompt: "make a sandwich"
 
 model:
   action_dim: 14
+  # Match the Stage-1 training checkpoint and Stage-2 feature extractor.
+  precision: bf16
   num_action_chunks: 16
   num_steps: 4
-  config_name: "pi05_aloha_robotwin"
+  config_name: "pi05_aloha_robotwin_sandwich"
   openpi:
-    config_name: "pi05_aloha_robotwin"
+    config_name: "pi05_aloha_robotwin_sandwich"
     num_images_in_input: 3
     action_horizon: 16
     action_chunk: 16
     action_env_dim: 14
     train_expert_only: false
     noise_method: "flow_noise"
+    model_action_dim: 32
+    paligemma_variant: "gemma_2b"
+    action_expert_variant: "gemma_300m"
+    max_token_len: 200
+    discrete_state_input: true
     noise_params: [0.16, 0.12, 200]
     joint_logprob: true
     detach_critic_input: true

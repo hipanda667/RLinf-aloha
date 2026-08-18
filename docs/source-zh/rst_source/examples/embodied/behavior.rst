@@ -87,7 +87,7 @@
 .. include:: _setup_common.rst
 
 **选项 1：Docker 镜像** — BEHAVIOR 提供 **两个独立镜像**，每个对应一个模型：
-``agentic-rlinf0.3-behavior``（OpenVLA-OFT）和 ``agentic-rlinf0.3-behavior-openpi``
+``agentic-rlinf0.4-behavior``（OpenVLA-OFT）和 ``agentic-rlinf0.4-behavior-openpi``
 （OpenPI）。每个镜像只内置各自的虚拟环境，因此请根据要训练的模型拉取对应镜像
 （两者之间无法通过 ``switch_env`` 互相切换）：
 
@@ -99,8 +99,8 @@
       --network host \
       --name rlinf \
       -v .:/workspace/RLinf \
-      rlinf/rlinf:agentic-rlinf0.3-behavior
-      # 国内镜像：docker.1ms.run/rlinf/rlinf:agentic-rlinf0.3-behavior
+      rlinf/rlinf:agentic-rlinf0.4-behavior
+      # 国内镜像：docker.1ms.run/rlinf/rlinf:agentic-rlinf0.4-behavior
 
    # OpenPI 模型（独立镜像）：
    docker run -it --rm --gpus all \
@@ -108,8 +108,8 @@
       --network host \
       --name rlinf \
       -v .:/workspace/RLinf \
-      rlinf/rlinf:agentic-rlinf0.3-behavior-openpi
-      # 国内镜像：docker.1ms.run/rlinf/rlinf:agentic-rlinf0.3-behavior-openpi
+      rlinf/rlinf:agentic-rlinf0.4-behavior-openpi
+      # 国内镜像：docker.1ms.run/rlinf/rlinf:agentic-rlinf0.4-behavior-openpi
 
    # 两个镜像都会默认激活各自对应的虚拟环境。
 
@@ -265,6 +265,38 @@ OpenPI-Comet 作为示例来源：
 独立评估请走 :doc:`BEHAVIOR-1K 评测指南 <../../evaluations/guides/behavior>`。
 该指南负责 ``ISAAC_PATH`` / ``OMNIGIBSON_DATA_PATH`` 设置、
 ``behavior_openpi_pi05_eval`` 启动命令和结果解读。
+
+--------------
+
+**5. 使用 OpenPI_RLinf (Pi0.5) 代码进行评估**
+
+BEHAVIOR 评估同样支持自包含的 **OpenPI_RLinf** 代码（模型
+``model_type: openpi_rlinf``；对应的 SFT 流程参见 :doc:`sft_openpi_rlinf`）。
+评估配置为：
+
+- ``evaluations/behavior/behavior_openpi_pi05_rlinf_eval.yaml``
+
+该配置以纯评估模式运行（``runner.only_eval: True``），并消费 **OpenPI_RLinf**
+checkpoint，即由 OpenPI checkpoint 转换器
+（``ckpt_convertor.openpi`` 的 ``openpi_pytorch_to_openpi_rlinf`` /
+``sft_to_openpi_rlinf``）产出的 checkpoint。
+将模型路径以 ``/path/to/...`` 占位符的形式直接写在配置中：
+
+- ``rollout.model.model_path``：OpenPI_RLinf 评估 checkpoint。
+
+归一化统计从转换后 checkpoint 中打包的
+``physical-intelligence/behavior/norm_stats.json`` 读取。
+
+.. code:: bash
+
+   export ISAAC_PATH=/path/to/isaac-sim
+   export OMNIGIBSON_DATA_PATH=/path/to/BEHAVIOR-1K-datasets
+   bash evaluations/run_eval.sh behavior behavior_openpi_pi05_rlinf_eval
+
+.. note::
+
+   评估时流匹配动作头使用非确定性（随机）采样噪声，因此重复运行之间，单次轨迹与
+   成功次数会有轻微差异。
 
 
 配置参考

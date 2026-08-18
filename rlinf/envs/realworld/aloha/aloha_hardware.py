@@ -30,6 +30,8 @@ from .aloha_contract import CAMERA_NAMES, require_aloha_vector
 
 @dataclass(frozen=True)
 class AlohaHardwareObservation:
+    """One synchronized ALOHA state and camera observation."""
+
     qpos: np.ndarray
     frames: dict[str, np.ndarray]
 
@@ -68,17 +70,20 @@ class DummyAlohaHardware:
         self.last_action: np.ndarray | None = None
 
     def read_observation(self) -> AlohaHardwareObservation:
+        """Return a copy of the deterministic dummy observation."""
         return AlohaHardwareObservation(
             qpos=self._qpos.copy(),
             frames={name: frame.copy() for name, frame in self._frames.items()},
         )
 
     def send_action(self, action: np.ndarray) -> None:
+        """Record an action and expose it as the next dummy joint state."""
         self.last_action = require_aloha_vector(action, name="dummy action")
         self._qpos = self.last_action.copy()
 
     def read_human_action(self) -> np.ndarray | None:
+        """Return no intervention for the dummy backend."""
         return None
 
     def close(self) -> None:
-        return None
+        """Release the dummy backend, which owns no resources."""

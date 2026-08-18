@@ -76,9 +76,7 @@ def test_realworld_wrapper_keeps_explicit_left_right_wrist_order():
 
     raw_obs = {
         "state": {"qpos": np.arange(14, dtype=np.float32)[None, :]},
-        "frames": {
-            name: frame[None, ...] for name, frame in _frames().items()
-        },
+        "frames": {name: frame[None, ...] for name, frame in _frames().items()},
     }
     obs = env._wrap_obs(raw_obs)
 

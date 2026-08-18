@@ -31,6 +31,7 @@ def create_aloha_sandwich_env(
     env_idx: int,
     env_cfg: Mapping[str, Any],
 ) -> gym.Env:
+    """Build an ALOHA sandwich environment for RealWorldEnv."""
     del env_cfg
     return AlohaEnv(
         AlohaConfig(**override_cfg),
@@ -42,9 +43,7 @@ def create_aloha_sandwich_env(
 
 register(
     id="AlohaSandwichEnv-v1",
-    entry_point=(
-        "rlinf.envs.realworld.aloha.tasks:create_aloha_sandwich_env"
-    ),
+    entry_point="rlinf.envs.realworld.aloha.tasks:create_aloha_sandwich_env",
 )
 
 __all__ = ["create_aloha_sandwich_env"]

@@ -29,6 +29,8 @@ ExecutedActionSource = Literal["policy", "reference", "actor", "human"]
 
 
 class ControlMode(enum.IntEnum):
+    """Source-selection mode for the ALOHA controller."""
+
     MODEL = 0
     PAUSE = 1
     TELEOP = 2
@@ -36,6 +38,8 @@ class ControlMode(enum.IntEnum):
 
 @dataclass(frozen=True)
 class ActionDecision:
+    """Validated action and provenance selected for execution."""
+
     action: np.ndarray
     source: ExecutedActionSource
     intervene_flag: bool
@@ -47,7 +51,7 @@ def select_executed_action(
     policy_source: PolicyActionSource,
     human_action: np.ndarray | None,
 ) -> ActionDecision:
-    """Apply ``human > actor/reference`` priority without touching hardware."""
+    """Apply human-over-policy priority without touching hardware."""
     if policy_source not in ("policy", "reference", "actor"):
         raise ValueError(f"Unsupported policy action source: {policy_source!r}.")
 

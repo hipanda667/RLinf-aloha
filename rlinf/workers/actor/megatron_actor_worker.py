@@ -28,6 +28,7 @@ from rlinf.utils.distributed import (
     vocab_parallel_entropy_and_log_probs,
     vocab_parallel_log_probs_from_logits,
 )
+from rlinf.utils.metric_utils import CRITIC_EXPLAINED_VARIANCE_STAT_KEYS
 from rlinf.utils.placement import (
     ModelParallelComponentPlacement,
     PlacementMode,
@@ -96,6 +97,12 @@ class MegatronActor(MegatronWorker):
             self.ref_policy_state_dict = retrieve_model_state_dict_in_cpu(self.model[0])
             self.offload_model_buffer = {}
 
+        self.rollout_weights_reshard = None
+        _rollout_ep_size = (
+            self.cfg.rollout.tensor_parallel_size
+            if self.cfg.rollout.get("sglang", {}).get("enable_ep_moe", False)
+            else 1
+        )
         rollout_reshard_config = ReshardConfig(
             model_type=self.cfg.rollout.model.model_type,
             model_config=self.transformer_config,
@@ -104,6 +111,7 @@ class MegatronActor(MegatronWorker):
             mg_ep_size=self.role_cfg.model.expert_model_parallel_size,
             mg_tpe_size=self.role_cfg.model.expert_tensor_parallel_size,
             moe_grouped_gemm=self.role_cfg.model.get("moe_grouped_gemm", None),
+            rollout_ep_size=_rollout_ep_size,
         )
         self.rollout_weights_reshard = MegatronCoreWeightReshard(rollout_reshard_config)
         self._setup_rollout_weight_dst_ranks()
@@ -285,7 +293,17 @@ class MegatronActor(MegatronWorker):
                 )
 
                 for k, v in metrics_data.items():
-                    if v is not None:
+                    if v is None:
+                        continue
+                    if k in CRITIC_EXPLAINED_VARIANCE_STAT_KEYS:
+                        v = v.detach().clone()
+                        torch.distributed.all_reduce(
+                            v,
+                            op=torch.distributed.ReduceOp.SUM,
+                            group=parallel_state.get_data_parallel_group(),
+                        )
+                        metrics_data[k] = v
+                    else:
                         metrics_data[k] = average_losses_across_data_parallel_group([v])
 
                 return loss, metrics_data
